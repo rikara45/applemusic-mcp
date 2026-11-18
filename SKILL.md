@@ -1,6 +1,6 @@
 ---
 name: apple-music
-version: 0.23.0
+version: 0.24.0
 description: Apple Music integration — the Apple Music API for library, playlists and catalog, plus the Chrome web player for playback and the Up Next queue
 ---
 
