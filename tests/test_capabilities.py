@@ -124,8 +124,8 @@ FastMCP = server.FastMCP  # mcp 1.x FastMCP or 2.x MCPServer, per server's impor
 @pytest.mark.parametrize(
     "level,ui,hidden",
     [
-        ("music", None, {"catalog", "discover", "queue"}),
-        ("music", "1", {"discover", "queue"}),
+        ("music", None, {"catalog", "discover", "queue", "vibe"}),
+        ("music", "1", {"discover", "queue", "vibe"}),
         ("api", None, {"queue"}),
         ("web", None, set()),
         (None, None, set()),
@@ -137,12 +137,12 @@ def test_hidden_tools(level, ui, hidden):
 
 def test_apply_level_removes_tools(monkeypatch):
     app = FastMCP("t")
-    for name in ("playlist", "catalog", "discover", "queue"):
+    for name in ("playlist", "catalog", "discover", "queue", "vibe"):
         app.tool(name=name)(lambda: "")
     monkeypatch.setenv("APPLEMUSIC_LEVEL", "music")
     removed = server.apply_level(app)
     names = {t.name for t in asyncio.run(app.list_tools())}
-    assert set(removed) == {"catalog", "discover", "queue"} and names == {"playlist"}
+    assert set(removed) == {"catalog", "discover", "queue", "vibe"} and names == {"playlist"}
 
 
 def test_apply_level_unrestricted_keeps_all():
@@ -156,7 +156,7 @@ def test_apply_level_unrestricted_keeps_all():
 def test_server_registers_the_tools_hidden_tools_names():
     # hidden_tools names must match real registrations or hiding silently fails.
     names = {t.name for t in asyncio.run(server.mcp.list_tools())}
-    assert {"catalog", "discover", "queue"} <= names
+    assert {"catalog", "discover", "queue", "vibe"} <= names
 
 
 # -- full: everything, named --------------------------------------------------

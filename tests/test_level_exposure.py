@@ -14,14 +14,14 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 LIBRARY = {"config", "library", "playback", "playlist"}
-ALL = LIBRARY | {"catalog", "discover", "queue"}
+ALL = LIBRARY | {"catalog", "discover", "queue", "vibe"}
 
 # (serve args) -> tools a client is offered
 EXPOSURE = [
     (["--level", "music"], LIBRARY),
     (["--level", "music", "--allow-ui"], LIBRARY | {"catalog"}),
-    (["--level", "api"], LIBRARY | {"catalog", "discover"}),
-    (["--level", "api", "--allow-ui"], LIBRARY | {"catalog", "discover"}),
+    (["--level", "api"], LIBRARY | {"catalog", "discover", "vibe"}),
+    (["--level", "api", "--allow-ui"], LIBRARY | {"catalog", "discover", "vibe"}),
     (["--level", "web"], ALL),
     (["--level", "full"], ALL),
     ([], ALL),
