@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.24.0] - 2026-11-19
+
+The native macOS path is gone. This build talks to Apple Music through the web API and
+plays through the Chrome web player, so it behaves the same on Windows, Linux, and macOS.
+
+### Removed
+
+| Gone | Use instead |
+|---|---|
+| `--level music`, `--allow-ui`, `--safari` | `--level api` / `web` / `full`; `login` opens Chrome |
+| Music.app playback, Safari player | the Chrome web player (`--level web`) |
+| 1–5 star ratings | love / dislike (`library(rate=...)`) |
+| Favorites (loved) list, library snapshots | — (not exposed by the API) |
+| Nested folders, folder tree, folder `path`, folder rename | single-level folders: create, move, delete |
+| Genre search in your library | full-text `library(action='search')` |
+| AirPlay device selection | — (needs the local app) |
+
+- Playwright is now a dependency on every platform; the `[browser]` extra and
+  `pyobjc-framework-Quartz` are gone.
+- Paginated API reads stop after 200 pages, so a response that keeps repeating a full
+  page can no longer spin forever.
+
+### Changed
+
+- Playlist, library, and playback writes report the path they took (`via Apple Music API`
+  / `via web player`) instead of `via Music.app`.
+
 ## [0.23.0] - 2026-11-18
 
 New `vibe` tool: a few seed songs in, a playlist with the same feel out.
