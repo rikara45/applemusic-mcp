@@ -45,33 +45,6 @@ def test_login_web_delegates_to_browser(monkeypatch):
     assert called["signin"] is True
 
 
-def test_login_macos_defaults_to_safari(monkeypatch):
-    """On macOS, plain `login` (no --chrome) harvests from Safari — no Chrome."""
-    monkeypatch.setattr("platform.system", lambda: "Darwin")
-    from applemusic_mcp import auth, safari as safari_mod
-
-    saved = {}
-    monkeypatch.setattr(safari_mod, "media_user_token", lambda: (True, "TOK"))
-    monkeypatch.setattr(auth, "save_user_token", lambda t: saved.setdefault("t", t))
-    assert cli.cmd_login(_args(dev=False)) == 0
-    assert saved["t"] == "TOK"
-
-
-def test_login_macos_chrome_needs_browser_extra(monkeypatch, capsys):
-    """macOS --chrome with Playwright absent guides to the extra / Safari, no crash."""
-    monkeypatch.setattr("platform.system", lambda: "Darwin")
-    monkeypatch.setitem(
-        sys.modules,
-        "applemusic_mcp.browser",
-        types.SimpleNamespace(
-            _cli_signin=lambda: 0, _profile_in_use=lambda: False, is_available=lambda: False
-        ),
-    )
-    assert cli.cmd_login(_args(dev=False, chrome=True)) == 1
-    out = capsys.readouterr().out.lower()
-    assert "browser" in out and ("safari" in out or "playwright" in out)
-
-
 # --- login --dev -----------------------------------------------------------
 
 
@@ -374,7 +347,7 @@ def test_status_web_session_not_misreported(monkeypatch, tmp_path, capsys):
 
 
 # ---------------------------------------------------------------------------
-# serve --level / --allow-ui
+# serve --level
 # ---------------------------------------------------------------------------
 
 
@@ -388,13 +361,11 @@ def test_serve_level_sets_env(monkeypatch):
     seen = {}
     _fake_server(
         monkeypatch,
-        lambda: seen.update(
-            level=os.environ.get("APPLEMUSIC_LEVEL"), ui=os.environ.get("APPLEMUSIC_ALLOW_UI")
-        ),
+        lambda: seen.update(level=os.environ.get("APPLEMUSIC_LEVEL")),
     )
-    monkeypatch.setattr(sys, "argv", ["applemusic-mcp", "serve", "--level", " API ", "--allow-ui"])
+    monkeypatch.setattr(sys, "argv", ["applemusic-mcp", "serve", "--level", " API "])
     cli.main()
-    assert seen == {"level": "api", "ui": "1"}
+    assert seen == {"level": "api"}
 
 
 def test_serve_without_level_leaves_env_unset(monkeypatch):
@@ -413,7 +384,7 @@ def test_serve_bad_level_exits_2(monkeypatch, capsys):
     with pytest.raises(SystemExit) as e:
         cli.main()
     assert e.value.code == 2
-    assert "music, api, web" in capsys.readouterr().err
+    assert "api, web, full" in capsys.readouterr().err
 
 
 def test_status_shows_level(monkeypatch, tmp_path, capsys):

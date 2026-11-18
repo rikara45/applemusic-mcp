@@ -37,9 +37,7 @@ import time
 
 import pytest
 
-from applemusic_mcp import amp_api
-from applemusic_mcp import auth
-from applemusic_mcp import server
+from applemusic_mcp import amp_api, auth, server
 
 # --- environment preflight -------------------------------------------------
 

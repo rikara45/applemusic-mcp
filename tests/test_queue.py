@@ -189,14 +189,13 @@ def test_queue_set_none_resolve(monkeypatch):
     assert "Error" in out and "none of those" in out.lower()
 
 
-def test_queue_native_mode_has_no_up_next(monkeypatch):
-    """Native (Music.app) mode has no exposed Up Next — queue returns an actionable
-    error pointing at safari/chrome, instead of silently building an unreachable queue."""
-    monkeypatch.setattr(server, "get_user_preferences", lambda: {"mode": "native"})
-    monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
+def test_queue_below_web_level_is_denied(monkeypatch):
+    """At the api level there is no web player, so queue returns an actionable
+    error pointing at --level web."""
+    monkeypatch.setenv("APPLEMUSIC_LEVEL", "api")
     monkeypatch.setattr(server, "_queue_resolve_catalog_id", lambda t, a="": "555")
     out = server.queue(action="play_last", track="X")
-    assert out.startswith("Error") and ("safari" in out.lower() or "chrome" in out.lower())
+    assert out.startswith("Error") and "--level web" in out
 
 
 def test_queue_no_warn_when_engine_web(monkeypatch):

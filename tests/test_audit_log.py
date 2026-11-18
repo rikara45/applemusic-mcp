@@ -1,15 +1,11 @@
 """Tests for audit_log module."""
 
 import json
-import tempfile
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 from applemusic_mcp import audit_log
-
 
 # Note: conftest.py provides mock_audit_log_for_all_tests (autouse) which
 # patches get_audit_log_path for all tests. We use that path directly.

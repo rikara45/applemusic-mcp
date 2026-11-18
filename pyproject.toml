@@ -39,28 +39,16 @@ dependencies = [
     "requests>=2.31.0",
     "cryptography>=41.0.0",
     # Browser engine for sign-in / token capture / web playback (drives a local
-    # Chrome against music.apple.com). REQUIRED off macOS — it's the only path there
-    # (no Music.app, no Safari harvest). On macOS it's OPTIONAL: Safari sign-in
-    # (`login --safari`), native Music.app playback, and the API cover everything, so
-    # the default Mac install skips the ~500 MB Playwright download. Mac users who
-    # want the Chrome web player install the `browser` extra (see optional-deps).
-    "playwright>=1.44.0; sys_platform != 'darwin'",
+    # Chrome against music.apple.com). Required everywhere: this build has no
+    # Music.app path, so Chrome is playback, the queue, and sign-in.
+    "playwright>=1.44.0",
     # OS keychain for token storage (macOS Keychain / Windows Credential Locker /
     # Linux Secret Service). Falls back to a 0600 file when no backend is available
     # (e.g. headless servers), so this never blocks the API path.
     "keyring>=24.0.0",
-    # macOS only: Quartz powers the canonical screen-locked / no-active-console
-    # detection (CGSessionCopyCurrentDictionary). Without it that check silently
-    # degrades to an AppleScript heuristic. macOS-gated so it never touches
-    # Windows/Linux installs.
-    "pyobjc-framework-Quartz>=10.0; sys_platform == 'darwin'",
 ]
 
 [project.optional-dependencies]
-# macOS users who want the Chrome web player (instead of Safari sign-in + native
-# Music.app playback) install this: `pip install 'applemusic-mcp[browser]'`.
-# Off macOS, Playwright is a hard dependency (above) and this extra is redundant.
-browser = ["playwright>=1.44.0"]
 dev = [
     "pytest>=7.0.0",
     "pytest-mock>=3.0.0",
@@ -92,13 +80,12 @@ select = ["E", "F", "I", "W"]
 
 [tool.pytest.ini_options]
 markers = [
-    "slow: marks tests as slow (live AppleScript / Music.app I/O); deselect with '-m \"not slow\"'",
+    "slow: marks tests as slow (live API I/O); deselect with '-m \"not slow\"'",
     "ui: marks the live API pre-release gate (real account mutations); require TEST_API=1",
-    "ui_live: marks live Music.app UI-automation tests (native playback / catalog deep-link / UI search); require TEST_UI=1 + a signed-in, unlocked Mac with Accessibility granted",
 ]
 # Default: skip slow + live gates unless explicitly opted in. Local pre-commit
 # runs the fast subset; CI and `make test-all` run everything.
-addopts = "-m 'not slow and not ui and not ui_live'"
+addopts = "-m 'not slow and not ui'"
 
 [tool.coverage.run]
 source = ["applemusic_mcp"]

@@ -21,20 +21,6 @@ import pytest
 
 from applemusic_mcp import server
 
-
-@pytest.fixture(autouse=True)
-def _no_real_safari_signin(monkeypatch):
-    """signin now tries the Safari harvest first on macOS — stub it to 'no session'
-    so config signin tests deterministically exercise the Chrome path regardless of
-    the host's real Safari state (tests that want Safari success override this)."""
-    from applemusic_mcp import safari
-
-    monkeypatch.setattr(
-        safari, "media_user_token", lambda: (False, "no safari session"), raising=False
-    )
-    yield
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -269,7 +255,6 @@ class TestConfigInfo:
             patch.object(server, "get_cache_dir", return_value=tmp_path),
             patch.object(al, "get_recent_entries", return_value=[]),
             patch.object(al, "get_audit_log_path", return_value=tmp_path / "audit.log"),
-            patch.object(server, "_get_snapshot_dir", return_value=tmp_path),
         ):
             out = server.config(action="info")
 
@@ -292,7 +277,6 @@ class TestConfigInfo:
             patch.object(server, "get_cache_dir", return_value=tmp_path),
             patch.object(al, "get_recent_entries", return_value=[]),
             patch.object(al, "get_audit_log_path", return_value=tmp_path / "nope.log"),
-            patch.object(server, "_get_snapshot_dir", return_value=tmp_path),
         ):
             out = server.config(action="info")
         assert "1 entries" in out
@@ -315,7 +299,6 @@ class TestConfigInfo:
             patch.object(server, "get_cache_dir", return_value=tmp_path),
             patch.object(al, "get_recent_entries", return_value=[]),
             patch.object(al, "get_audit_log_path", return_value=tmp_path / "nope.log"),
-            patch.object(server, "_get_snapshot_dir", return_value=tmp_path),
         ):
             out = server.config(action="info")
         assert "and 2 more" in out
@@ -336,36 +319,9 @@ class TestConfigInfo:
             patch.object(server, "get_cache_dir", return_value=tmp_path / "empty"),
             patch.object(al, "get_recent_entries", return_value=[1, 2, 3, 4, 5]),
             patch.object(al, "get_audit_log_path", return_value=audit_log_path),
-            patch.object(server, "_get_snapshot_dir", return_value=tmp_path),
         ):
             out = server.config(action="info")
         assert "Audit Log" in out
-
-    def test_info_with_baseline_exists(self, mock_config_dir, tmp_path):
-        """Branch: snapshot baseline exists → shows baseline name."""
-        mock_cache = MagicMock()
-        mock_cache._cache = {}
-        mock_cache.cache_file = tmp_path / "tc.json"
-
-        snap_dir = tmp_path / "snaps"
-        snap_dir.mkdir()
-        baseline = snap_dir / "snapshot-20240101-120000-baseline.json"
-        baseline.write_text("{}")
-        diff_file = snap_dir / "diff-20240102-000000.json"
-        diff_file.write_text("{}")
-
-        from applemusic_mcp import audit_log as al
-
-        with (
-            patch.object(server, "get_track_cache", return_value=mock_cache),
-            patch.object(server, "get_cache_dir", return_value=tmp_path / "empty"),
-            patch.object(al, "get_recent_entries", return_value=[]),
-            patch.object(al, "get_audit_log_path", return_value=tmp_path / "nope.log"),
-            patch.object(server, "_get_snapshot_dir", return_value=snap_dir),
-        ):
-            out = server.config(action="info")
-        assert "baseline" in out.lower()
-        assert "Diffs recorded" in out
 
     def test_info_large_cache_file_mb(self, mock_config_dir, tmp_path):
         """Branch: cache file >= 1MB → MB suffix."""
@@ -383,7 +339,6 @@ class TestConfigInfo:
             patch.object(server, "get_cache_dir", return_value=tmp_path / "empty"),
             patch.object(al, "get_recent_entries", return_value=[]),
             patch.object(al, "get_audit_log_path", return_value=tmp_path / "nope.log"),
-            patch.object(server, "_get_snapshot_dir", return_value=tmp_path),
         ):
             out = server.config(action="info")
         assert "MB" in out
@@ -404,7 +359,6 @@ class TestConfigInfo:
             patch.object(server, "get_cache_dir", return_value=tmp_path),
             patch.object(al, "get_recent_entries", return_value=[]),
             patch.object(al, "get_audit_log_path", return_value=tmp_path / "nope.log"),
-            patch.object(server, "_get_snapshot_dir", return_value=tmp_path),
         ):
             out = server.config(action="info")
         assert "MB" in out
@@ -535,467 +489,6 @@ class TestConfigAuthStatusBranches:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def snap_dir(tmp_path, monkeypatch):
-    """Monkeypatch _get_snapshot_dir → tmp_path / 'snaps'."""
-    d = tmp_path / "snaps"
-    d.mkdir()
-    monkeypatch.setattr(server, "_get_snapshot_dir", lambda: d)
-    return d
-
-
-SAMPLE_SNAPSHOT = {
-    "track_count": 500,
-    "playlists": {
-        "Chill": ["Song A - Artist A", "Song B - Artist B"],
-        "Workout": ["Song C - Artist C"],
-    },
-    "playback": {
-        "player_state": "stopped",
-        "volume": 50,
-        "shuffle": False,
-        "repeat": "off",
-        "current_track": None,
-        "current_artist": None,
-    },
-}
-
-
-class TestGetSnapshotDir:
-    def test_returns_directory(self, tmp_path, monkeypatch):
-        """_get_snapshot_dir creates and returns the directory."""
-        target = tmp_path / "cache" / "applemusic-mcp" / "snapshots"
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        result = server._get_snapshot_dir()
-        assert result.exists()
-        assert "snapshots" in str(result)
-
-
-class TestGetBaseline:
-    def test_no_baseline_returns_none(self, snap_dir):
-        assert server._get_baseline() is None
-
-    def test_returns_latest_baseline(self, snap_dir):
-        older = snap_dir / "snapshot-20240101-000000-baseline.json"
-        older.write_text(json.dumps({"track_count": 100}))
-        newer = snap_dir / "snapshot-20240202-000000-baseline.json"
-        newer.write_text(json.dumps({"track_count": 200}))
-
-        result = server._get_baseline()
-        assert result is not None
-        data, path = result
-        assert data["track_count"] == 200
-        assert path == newer
-
-    def test_bad_json_returns_none(self, snap_dir):
-        bad = snap_dir / "snapshot-20240101-000000-baseline.json"
-        bad.write_text("{ not valid json }")
-        assert server._get_baseline() is None
-
-
-class TestSaveBaseline:
-    def test_saves_file_and_removes_old(self, snap_dir):
-        old = snap_dir / "snapshot-20200101-000000-baseline.json"
-        old.write_text("{}")
-        path = server._save_baseline({"track_count": 99})
-        assert path.exists()
-        assert "-baseline.json" in path.name
-        assert not old.exists()
-        assert json.loads(path.read_text())["track_count"] == 99
-
-
-class TestSaveDiff:
-    def test_saves_diff(self, snap_dir):
-        diff = {"track_count_change": 5, "is_clean": False}
-        path = server._save_diff(diff)
-        assert path.exists()
-        assert "diff-" in path.name
-
-    def test_rotates_old_diffs(self, snap_dir):
-        # Create 51 diff files (one more than _DIFF_MAX_KEEP = 50)
-        for i in range(51):
-            (snap_dir / f"diff-20240101-{i:06d}.json").write_text("{}")
-        server._save_diff({"is_clean": True})
-        diffs = list(snap_dir.glob("diff-*.json"))
-        assert len(diffs) <= 50
-
-
-class TestFormatSnapshotSummary:
-    def test_basic_summary(self):
-        lines = server._format_snapshot_summary(SAMPLE_SNAPSHOT)
-        text = "\n".join(lines)
-        assert "500 tracks" in text
-        assert "Playlists: 2" in text
-        assert "shuffle off" in text
-
-    def test_with_current_track(self):
-        snap = dict(SAMPLE_SNAPSHOT)
-        snap = {
-            **SAMPLE_SNAPSHOT,
-            "playback": {
-                **SAMPLE_SNAPSHOT["playback"],
-                "current_track": "My Song",
-                "current_artist": "My Artist",
-            },
-        }
-        lines = server._format_snapshot_summary(snap)
-        text = "\n".join(lines)
-        assert "Now playing: My Song - My Artist" in text
-
-    def test_empty_snapshot(self):
-        lines = server._format_snapshot_summary({})
-        text = "\n".join(lines)
-        assert "?" in text  # track_count missing → '?'
-
-
-class TestFormatDiff:
-    def test_clean_no_playback(self):
-        diff = {"is_clean": True}
-        lines = server._format_diff(diff)
-        assert len(lines) == 1
-        assert "No library changes" in lines[0]
-
-    def test_clean_with_playback_changes(self):
-        diff = {
-            "is_clean": True,
-            "playback_changes": {"volume": {"before": 50, "after": 70}},
-        }
-        lines = server._format_diff(diff)
-        assert "playback" in lines[0]
-        assert "volume" in lines[0]
-
-    def test_track_count_change_positive(self):
-        diff = {
-            "is_clean": False,
-            "track_count_change": 3,
-        }
-        lines = server._format_diff(diff)
-        assert any("+3" in l for l in lines)
-
-    def test_track_count_change_negative(self):
-        diff = {
-            "is_clean": False,
-            "track_count_change": -2,
-        }
-        lines = server._format_diff(diff)
-        assert any("-2" in l for l in lines)
-
-    def test_playlists_added(self):
-        diff = {
-            "is_clean": False,
-            "playlists_added": ["New Playlist"],
-        }
-        lines = server._format_diff(diff)
-        assert any("Playlists added" in l for l in lines)
-        assert any("New Playlist" in l for l in lines)
-
-    def test_playlists_removed(self):
-        diff = {
-            "is_clean": False,
-            "playlists_removed": ["Old Playlist"],
-        }
-        lines = server._format_diff(diff)
-        assert any("Playlists removed" in l for l in lines)
-
-    def test_playlists_changed_added_tracks(self):
-        diff = {
-            "is_clean": False,
-            "playlists_changed": {
-                "My Playlist": {
-                    "added": ["Track 1", "Track 2", "Track 3"],
-                    "removed": [],
-                }
-            },
-        }
-        lines = server._format_diff(diff)
-        text = "\n".join(lines)
-        assert "+3 tracks" in text
-        assert "Track 1" in text
-
-    def test_playlists_changed_removed_tracks(self):
-        diff = {
-            "is_clean": False,
-            "playlists_changed": {
-                "My Playlist": {
-                    "added": [],
-                    "removed": ["Song X", "Song Y"],
-                }
-            },
-        }
-        lines = server._format_diff(diff)
-        text = "\n".join(lines)
-        assert "-2 tracks" in text
-        assert "Song X" in text
-
-    def test_playlists_changed_many_added_truncated(self):
-        """More than 5 tracks added → '... and N more' line."""
-        diff = {
-            "is_clean": False,
-            "playlists_changed": {
-                "Big": {
-                    "added": [f"Track {i}" for i in range(8)],
-                    "removed": [],
-                }
-            },
-        }
-        lines = server._format_diff(diff)
-        text = "\n".join(lines)
-        assert "and 3 more" in text
-
-    def test_playlists_changed_many_removed_truncated(self):
-        """More than 5 tracks removed → '... and N more' line."""
-        diff = {
-            "is_clean": False,
-            "playlists_changed": {
-                "Big": {
-                    "added": [],
-                    "removed": [f"Track {i}" for i in range(7)],
-                }
-            },
-        }
-        lines = server._format_diff(diff)
-        text = "\n".join(lines)
-        assert "and 2 more" in text
-
-    def test_playback_changes_in_dirty_diff(self):
-        """Playback changes also printed when diff is not clean."""
-        diff = {
-            "is_clean": False,
-            "playback_changes": {"volume": {"before": 20, "after": 80}},
-        }
-        lines = server._format_diff(diff)
-        assert any("volume" in l for l in lines)
-
-
-# ---------------------------------------------------------------------------
-# _library_snapshot_default
-# ---------------------------------------------------------------------------
-
-
-class TestLibrarySnapshotDefault:
-    def test_no_baseline_calls_new(self, snap_dir, monkeypatch):
-        """No baseline → delegates to _library_snapshot_new."""
-        calls = []
-        monkeypatch.setattr(server, "_library_snapshot_new", lambda: calls.append(1) or "NEW")
-        out = server._library_snapshot_default()
-        assert out == "NEW"
-        assert calls
-
-    def test_with_baseline_diffs(self, snap_dir, monkeypatch):
-        """Baseline exists → diff is computed and formatted."""
-        # Write a baseline
-        baseline_path = snap_dir / "snapshot-20240101-000000-baseline.json"
-        baseline_path.write_text(json.dumps(SAMPLE_SNAPSHOT))
-
-        current = dict(SAMPLE_SNAPSHOT)
-        monkeypatch.setattr(server.asc, "library_snapshot", lambda: (True, current))
-        monkeypatch.setattr(
-            server.asc,
-            "library_diff",
-            lambda b, a: {"is_clean": True},
-        )
-        out = server._library_snapshot_default()
-        assert "Library Snapshot" in out
-        assert "No library changes" in out
-
-    def test_snapshot_failure(self, snap_dir, monkeypatch):
-        """asc.library_snapshot() fails → error message."""
-        baseline_path = snap_dir / "snapshot-20240101-000000-baseline.json"
-        baseline_path.write_text(json.dumps(SAMPLE_SNAPSHOT))
-
-        monkeypatch.setattr(server.asc, "library_snapshot", lambda: (False, {"error": "oops"}))
-        out = server._library_snapshot_default()
-        assert "Error" in out and "oops" in out
-
-
-# ---------------------------------------------------------------------------
-# _library_snapshot_new
-# ---------------------------------------------------------------------------
-
-
-class TestLibrarySnapshotNew:
-    def test_initial_baseline(self, snap_dir, monkeypatch):
-        """No prior baseline → creates 'Initial' baseline."""
-        monkeypatch.setattr(server.asc, "library_snapshot", lambda: (True, SAMPLE_SNAPSHOT))
-        out = server._library_snapshot_new()
-        assert "Initial Library Baseline" in out
-        # Verify file was written
-        assert any(snap_dir.glob("snapshot-*-baseline.json"))
-
-    def test_new_baseline_with_dirty_diff(self, snap_dir, monkeypatch):
-        """Existing baseline + dirty diff → saves diff before new baseline."""
-        old_baseline = snap_dir / "snapshot-20230101-000000-baseline.json"
-        old_baseline.write_text(json.dumps(SAMPLE_SNAPSHOT))
-
-        new_snap = {**SAMPLE_SNAPSHOT, "track_count": 510}
-        dirty_diff = {
-            "is_clean": False,
-            "track_count_change": 10,
-            "playlists_added": [],
-            "playlists_removed": [],
-            "playlists_changed": {},
-        }
-        monkeypatch.setattr(server.asc, "library_snapshot", lambda: (True, new_snap))
-        monkeypatch.setattr(server.asc, "library_diff", lambda b, a: dirty_diff)
-
-        out = server._library_snapshot_new()
-        assert "New Library Baseline" in out
-        # A diff file should have been written
-        assert any(snap_dir.glob("diff-*.json"))
-
-    def test_snapshot_failure(self, snap_dir, monkeypatch):
-        """asc.library_snapshot() fails → error."""
-        monkeypatch.setattr(server.asc, "library_snapshot", lambda: (False, {"error": "fail"}))
-        out = server._library_snapshot_new()
-        assert "Error" in out and "fail" in out
-
-    def test_new_baseline_with_clean_diff(self, snap_dir, monkeypatch):
-        """Existing baseline + clean diff → no diff file saved."""
-        old_baseline = snap_dir / "snapshot-20230101-000000-baseline.json"
-        old_baseline.write_text(json.dumps(SAMPLE_SNAPSHOT))
-
-        monkeypatch.setattr(server.asc, "library_snapshot", lambda: (True, SAMPLE_SNAPSHOT))
-        monkeypatch.setattr(server.asc, "library_diff", lambda b, a: {"is_clean": True})
-
-        out = server._library_snapshot_new()
-        # No diff files created
-        assert not list(snap_dir.glob("diff-*.json"))
-
-
-# ---------------------------------------------------------------------------
-# _library_history
-# ---------------------------------------------------------------------------
-
-
-class TestLibraryHistory:
-    def test_no_baseline_no_diffs(self, snap_dir):
-        out = server._library_history()
-        assert "None" in out
-        assert "No changes recorded" in out
-
-    def test_with_baseline_no_diffs(self, snap_dir):
-        b = snap_dir / "snapshot-20240101-000000-baseline.json"
-        b.write_text(json.dumps(SAMPLE_SNAPSHOT))
-        out = server._library_history()
-        assert "Baseline:" in out
-        assert "No changes recorded" in out
-
-    def test_with_diffs(self, snap_dir):
-        b = snap_dir / "snapshot-20240101-000000-baseline.json"
-        b.write_text(json.dumps(SAMPLE_SNAPSHOT))
-
-        diff_data = {
-            "timestamp": "2024-01-10T12:00:00",
-            "track_count_change": 5,
-            "playlists_added": ["New"],
-            "playlists_removed": [],
-            "playlists_changed": {"My PL": {}},
-        }
-        (snap_dir / "diff-20240110-120000.json").write_text(json.dumps(diff_data))
-
-        out = server._library_history()
-        assert "Changes recorded: 1" in out
-        assert "tracks +5" in out
-        assert "+1 playlists" in out
-        assert "1 playlists modified" in out
-
-    def test_unreadable_diff_file(self, snap_dir):
-        b = snap_dir / "snapshot-20240101-000000-baseline.json"
-        b.write_text(json.dumps(SAMPLE_SNAPSHOT))
-        bad = snap_dir / "diff-20240109-000000.json"
-        bad.write_text("{ bad json")
-        out = server._library_history()
-        assert "unreadable" in out
-
-    def test_diff_with_removed_playlists(self, snap_dir):
-        b = snap_dir / "snapshot-20240101-000000-baseline.json"
-        b.write_text(json.dumps(SAMPLE_SNAPSHOT))
-
-        diff_data = {
-            "timestamp": "2024-01-11T00:00:00",
-            "playlists_removed": ["Gone"],
-        }
-        (snap_dir / "diff-20240111-000000.json").write_text(json.dumps(diff_data))
-
-        out = server._library_history()
-        assert "-1 playlists" in out
-
-
-# ---------------------------------------------------------------------------
-# _library_snapshot_list
-# ---------------------------------------------------------------------------
-
-
-class TestLibrarySnapshotList:
-    def test_no_files(self, snap_dir):
-        out = server._library_snapshot_list()
-        assert "No snapshots" in out
-
-    def test_with_files(self, snap_dir):
-        b = snap_dir / "snapshot-20240101-000000-baseline.json"
-        b.write_text(json.dumps(SAMPLE_SNAPSHOT))
-        d = snap_dir / "diff-20240110-120000.json"
-        d.write_text("{}")
-        out = server._library_snapshot_list()
-        assert "[BASELINE]" in out
-        assert "diff-20240110-120000.json" in out
-
-    def test_size_bytes_branch(self, snap_dir):
-        """File < 1024 bytes → B suffix."""
-        b = snap_dir / "snapshot-20240101-000000-baseline.json"
-        b.write_bytes(b"x" * 100)
-        out = server._library_snapshot_list()
-        assert "B)" in out or "100B" in out
-
-    def test_size_mb_branch(self, snap_dir):
-        """File >= 1MB → MB suffix."""
-        b = snap_dir / "snapshot-20240101-000000-baseline.json"
-        b.write_bytes(b"x" * (1024 * 1024 + 1))
-        out = server._library_snapshot_list()
-        assert "MB" in out
-
-
-# ---------------------------------------------------------------------------
-# _library_snapshot_delete
-# ---------------------------------------------------------------------------
-
-
-class TestLibrarySnapshotDelete:
-    def test_empty_filename(self, snap_dir):
-        out = server._library_snapshot_delete("")
-        assert "provide a filename" in out
-
-    def test_baseline_cannot_be_deleted(self, snap_dir):
-        b = snap_dir / "snapshot-20240101-000000-baseline.json"
-        b.write_text("{}")
-        out = server._library_snapshot_delete("snapshot-20240101-000000-baseline.json")
-        assert "Cannot delete baseline" in out
-
-    def test_file_not_found(self, snap_dir):
-        out = server._library_snapshot_delete("diff-nonexistent.json")
-        assert "not found" in out
-
-    def test_deletes_diff_file(self, snap_dir):
-        d = snap_dir / "diff-20240110-120000.json"
-        d.write_text("{}")
-        out = server._library_snapshot_delete("diff-20240110-120000.json")
-        assert "Deleted" in out
-        assert not d.exists()
-
-    def test_adds_json_extension_if_missing(self, snap_dir):
-        d = snap_dir / "diff-20240110-120000.json"
-        d.write_text("{}")
-        # Pass without .json extension
-        out = server._library_snapshot_delete("diff-20240110-120000")
-        assert "Deleted" in out
-        assert not d.exists()
-
-
-# ---------------------------------------------------------------------------
-# _clear_credentials
-# ---------------------------------------------------------------------------
-
-
 class TestClearCredentials:
     def test_removes_present_key(self, mock_config_dir):
         """Key is present and cleared → appears in 'removed' list."""
@@ -1039,9 +532,7 @@ class TestAuthActionGaps:
         """signin_interactive returns (False, non-waiting msg) → browser error text.
         Force the Chrome fallback: Safari harvest fails + Playwright present."""
         import applemusic_mcp.browser as browser
-        from applemusic_mcp import safari
 
-        monkeypatch.setattr(safari, "media_user_token", lambda: (False, "no safari session"))
         monkeypatch.setattr(browser, "is_available", lambda: True)
         monkeypatch.setattr(browser, "signin_interactive", lambda: (False, "playwright not found"))
         out = server._auth_action("signin")
@@ -1136,7 +627,6 @@ class TestConfigInfoCacheSizes:
             patch.object(server, "get_cache_dir", return_value=tmp_path),
             patch.object(al, "get_recent_entries", return_value=[]),
             patch.object(al, "get_audit_log_path", return_value=audit_log_path),
-            patch.object(server, "_get_snapshot_dir", return_value=snap_dir_path),
         ):
             return server.config(action="info")
 
@@ -1173,7 +663,6 @@ class TestConfigInfoCacheSizes:
             patch.object(server, "get_cache_dir", return_value=tmp_path),
             patch.object(al, "get_recent_entries", return_value=[]),
             patch.object(al, "get_audit_log_path", return_value=tmp_path / "nope.log"),
-            patch.object(server, "_get_snapshot_dir", return_value=snap_dir),
         ):
             out = server.config(action="info")
         assert "tiny.csv" in out
@@ -1196,7 +685,6 @@ class TestConfigInfoCacheSizes:
             patch.object(server, "get_cache_dir", return_value=tmp_path),
             patch.object(al, "get_recent_entries", return_value=[]),
             patch.object(al, "get_audit_log_path", return_value=tmp_path / "nope.log"),
-            patch.object(server, "_get_snapshot_dir", return_value=snap_dir),
         ):
             out = server.config(action="info")
         assert "MB" in out
@@ -1219,7 +707,6 @@ class TestConfigInfoCacheSizes:
             patch.object(server, "get_cache_dir", return_value=tmp_path / "empty"),
             patch.object(al, "get_recent_entries", return_value=[1]),
             patch.object(al, "get_audit_log_path", return_value=audit_log_path),
-            patch.object(server, "_get_snapshot_dir", return_value=snap_dir),
         ):
             out = server.config(action="info")
         # Audit log shows KB size
@@ -1243,7 +730,6 @@ class TestConfigInfoCacheSizes:
             patch.object(server, "get_cache_dir", return_value=tmp_path / "empty"),
             patch.object(al, "get_recent_entries", return_value=[1]),
             patch.object(al, "get_audit_log_path", return_value=audit_log_path),
-            patch.object(server, "_get_snapshot_dir", return_value=snap_dir),
         ):
             out = server.config(action="info")
         assert "MB" in out
@@ -1264,29 +750,6 @@ class TestAuthStatusMissingBranch:
         assert "Developer Token" in out
 
 
-class TestSnapshotListKbSize:
-    """Line 6691: _library_snapshot_list _size_str with file between 1KB and 1MB."""
-
-    def test_kb_size_in_list(self, snap_dir):
-        b = snap_dir / "snapshot-20240101-000000-baseline.json"
-        b.write_bytes(b"x" * 1025)  # between 1KB and 1MB
-        out = server._library_snapshot_list()
-        assert "KB" in out
-
-
-class TestSnapshotDeleteInvalidPath:
-    """Line 6714: _library_snapshot_delete with path that resolves to empty name."""
-
-    def test_root_slash_gives_invalid_filename(self, snap_dir):
-        out = server._library_snapshot_delete("/")
-        assert "Invalid filename" in out
-
-
-# ---------------------------------------------------------------------------
-# Permission levels in config
-# ---------------------------------------------------------------------------
-
-
 def _info(tmp_path):
     mock_cache = MagicMock()
     mock_cache._cache = {}
@@ -1298,42 +761,28 @@ def _info(tmp_path):
         patch.object(server, "get_cache_dir", return_value=tmp_path),
         patch.object(al, "get_recent_entries", return_value=[]),
         patch.object(al, "get_audit_log_path", return_value=tmp_path / "audit.log"),
-        patch.object(server, "_get_snapshot_dir", return_value=tmp_path),
     ):
         return server.config(action="info")
 
 
 class TestConfigLevel:
-    @pytest.mark.parametrize(
-        "level,mode,needs",
-        [("api", "safari", "--level web"), ("music", "api", "--level api"), ("music", "chrome", "--level web")],
-    )
-    def test_set_pref_mode_refuses_above_level(self, monkeypatch, mock_config_dir, level, mode, needs):
-        monkeypatch.setenv("APPLEMUSIC_LEVEL", level)
+    @pytest.mark.parametrize("mode", ["chrome", "web", "safari"])
+    def test_set_pref_mode_refuses_above_level(self, monkeypatch, mock_config_dir, mode):
+        monkeypatch.setenv("APPLEMUSIC_LEVEL", "api")
         from applemusic_mcp import auth
 
         monkeypatch.setattr(auth, "load_config", lambda: pytest.fail("preference was written"))
         out = server.config(action="set-pref", preference="mode", string_value=mode)
-        assert needs in out
+        assert "--level web" in out
 
     def test_set_pref_mode_within_level_saves(self, monkeypatch, mock_config_dir):
-        monkeypatch.setenv("APPLEMUSIC_LEVEL", "music")
-        out = server.config(action="set-pref", preference="mode", string_value="native")
-        assert "Updated: mode = native" in out
+        monkeypatch.setenv("APPLEMUSIC_LEVEL", "web")
+        out = server.config(action="set-pref", preference="mode", string_value="chrome")
+        assert "Updated: mode = chrome" in out
 
     def test_info_shows_level(self, monkeypatch, mock_config_dir, tmp_path):
-        monkeypatch.setenv("APPLEMUSIC_LEVEL", "music")
-        assert "Permission level: music" in _info(tmp_path)
-
-    def test_info_shows_ui_flag(self, monkeypatch, mock_config_dir, tmp_path):
         monkeypatch.setenv("APPLEMUSIC_LEVEL", "api")
-        monkeypatch.setenv("APPLEMUSIC_ALLOW_UI", "1")
-        assert "Permission level: api + UI scripting" in _info(tmp_path)
+        assert "Permission level: api" in _info(tmp_path)
 
     def test_info_unrestricted_hint(self, mock_config_dir, tmp_path):
         assert "Permission level: unrestricted" in _info(tmp_path)
-
-    def test_info_warns_music_off_mac(self, monkeypatch, mock_config_dir, tmp_path):
-        monkeypatch.setenv("APPLEMUSIC_LEVEL", "music")
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
-        assert "needs macOS" in _info(tmp_path)

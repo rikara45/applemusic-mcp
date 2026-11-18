@@ -1,7 +1,7 @@
 """Per-level exposure, end to end: launch the real server over MCP stdio at each
 permission level and check exactly which tools a client sees, what the level
-refuses, and what it reports. No network, no Music.app, no account: listing
-tools and the refusals below touch none of them."""
+refuses, and what it reports. No network, no account: listing tools and the
+refusals below touch none of them."""
 
 from __future__ import annotations
 
@@ -18,10 +18,7 @@ ALL = LIBRARY | {"catalog", "discover", "queue", "vibe"}
 
 # (serve args) -> tools a client is offered
 EXPOSURE = [
-    (["--level", "music"], LIBRARY),
-    (["--level", "music", "--allow-ui"], LIBRARY | {"catalog"}),
     (["--level", "api"], LIBRARY | {"catalog", "discover", "vibe"}),
-    (["--level", "api", "--allow-ui"], LIBRARY | {"catalog", "discover", "vibe"}),
     (["--level", "web"], ALL),
     (["--level", "full"], ALL),
     ([], ALL),
@@ -31,7 +28,6 @@ EXPOSURE = [
 def _session(args, home):
     env = {**os.environ, "APPLEMUSIC_MCP_HOME": str(home)}
     env.pop("APPLEMUSIC_LEVEL", None)
-    env.pop("APPLEMUSIC_ALLOW_UI", None)
     params = StdioServerParameters(
         command=sys.executable, args=["-m", "applemusic_mcp", "serve", *args], env=env
     )
@@ -62,7 +58,9 @@ def _run(args, home, fn):
     return asyncio.run(_with_server(args, home, fn))
 
 
-@pytest.mark.parametrize("args,expected", EXPOSURE, ids=[" ".join(a) or "unset" for a, _ in EXPOSURE])
+@pytest.mark.parametrize(
+    "args,expected", EXPOSURE, ids=[" ".join(a) or "unset" for a, _ in EXPOSURE]
+)
 def test_tools_offered_per_level(args, expected, tmp_path):
     assert _run(args, tmp_path, _tools) == expected
 
@@ -70,10 +68,8 @@ def test_tools_offered_per_level(args, expected, tmp_path):
 @pytest.mark.parametrize(
     "level,mode,needs",
     [
-        ("music", "api", "--level api"),
-        ("music", "safari", "--level web"),
-        ("api", "safari", "--level web"),
         ("api", "chrome", "--level web"),
+        ("api", "web", "--level web"),
     ],
 )
 def test_mode_above_level_refused_over_the_wire(level, mode, needs, tmp_path):
@@ -94,53 +90,27 @@ def test_mode_within_level_is_saved_over_the_wire(tmp_path):
         ["--level", "web"],
         tmp_path,
         lambda s: _call(
-            s, "config", {"action": "set-pref", "preference": "mode", "string_value": "safari"}
+            s, "config", {"action": "set-pref", "preference": "mode", "string_value": "chrome"}
         ),
     )
-    assert "Updated: mode = safari" in out
-    assert '"mode": "safari"' in _config_file(tmp_path).read_text()
+    assert "Updated: mode = chrome" in out
+    assert '"mode": "chrome"' in _config_file(tmp_path).read_text()
 
 
-@pytest.mark.parametrize("level", ["music", "api"])
-def test_assistant_signin_refused_below_web(level, tmp_path):
-    out = _run(["--level", level], tmp_path, lambda s: _call(s, "config", {"action": "signin"}))
+def test_assistant_signin_refused_below_web(tmp_path):
+    out = _run(["--level", "api"], tmp_path, lambda s: _call(s, "config", {"action": "signin"}))
     assert "--level web" in out and "applemusic-mcp login" in out
 
 
 @pytest.mark.parametrize(
     "args,shown",
     [
-        (["--level", "music"], "Permission level: music"),
-        (["--level", "api", "--allow-ui"], "Permission level: api + UI scripting"),
+        (["--level", "api"], "Permission level: api"),
         (["--level", "full"], "Permission level: full"),
         ([], "Permission level: unrestricted"),
     ],
-    ids=["music", "api+ui", "full", "unset"],
+    ids=["api", "full", "unset"],
 )
 def test_config_info_reports_level(args, shown, tmp_path):
     out = _run(args, tmp_path, lambda s: _call(s, "config", {"action": "info"}))
     assert shown in out
-
-
-async def _call_result(s, tool, arguments):
-    res = await s.call_tool(tool, arguments)
-    is_error = getattr(res, "is_error", None)  # mcp 2.x
-    if is_error is None:
-        is_error = res.isError  # mcp 1.x
-    return is_error, res.content[0].text
-
-
-@pytest.mark.parametrize(
-    "args,tool,arguments",
-    [
-        (["--level", "music"], "library", {"action": "browse", "item_type": "albums"}),
-        (["--level", "music", "--allow-ui"], "catalog", {"action": "song_details", "song_id": "1440857781"}),
-    ],
-    ids=["music-library-browse-albums", "music+ui-catalog-song-details"],
-)
-def test_api_only_action_at_music_returns_refusal_text(args, tool, arguments, tmp_path):
-    # Visible tools whose specific action needs the network must answer with the
-    # level refusal as normal tool text, not a raw exception.
-    is_error, text = _run(args, tmp_path, lambda s: _call_result(s, tool, arguments))
-    assert not is_error, text
-    assert text.startswith("Error: ") and "--level api" in text and "client config" in text

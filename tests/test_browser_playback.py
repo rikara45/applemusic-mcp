@@ -1,39 +1,15 @@
-"""Tests for the playback-engine routing (branch B: browser-first playback).
+"""Tests for the playback routing (the Chrome web player is the only engine).
 
 The browser playback primitives themselves drive a live MusicKit instance, so
-they're exercised manually; here we cover the pure routing decision and the
+they're exercised manually; here we cover the routing helpers and the
 _browser_play track/url dispatch with the browser module mocked.
 """
-
-import pytest
 
 from applemusic_mcp import server
 
 
-@pytest.mark.parametrize(
-    "mode,applescript,expected",
-    [
-        ("auto", True, False),  # macOS + AppleScript -> native engine -> native playback
-        ("auto", False, True),  # no AppleScript (non-mac) -> web engine -> browser
-        ("native", True, False),  # pinned native -> native playback
-        ("native", False, True),  # pinned native off-Mac falls back to web -> browser
-        ("web", True, True),  # web engine -> browser playback, even on macOS
-        ("api", True, True),  # back-compat alias for web
-    ],
-)
-def test_use_browser_playback(monkeypatch, mode, applescript, expected):
-    # Playback follows the engine now — there is no separate playback pref.
-    monkeypatch.delenv("APPLEMUSIC_FORCE_BROWSER_PLAYBACK", raising=False)
-    monkeypatch.delenv("APPLEMUSIC_FORCE_API_MODE", raising=False)
-    monkeypatch.setattr(server, "get_user_preferences", lambda: {"mode": mode})
-    monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", applescript)
-    assert server._use_browser_playback() is expected
-
-
-def test_force_browser_playback_env(monkeypatch):
-    monkeypatch.setenv("APPLEMUSIC_FORCE_BROWSER_PLAYBACK", "1")
-    monkeypatch.setattr(server, "get_user_preferences", lambda: {"mode": "native"})
-    monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
+def test_use_browser_playback_always_true():
+    """Playback always runs in the Chrome web player here."""
     assert server._use_browser_playback() is True
 
 
@@ -105,35 +81,9 @@ def test_browser_play_track_not_found(monkeypatch):
     assert "not found" in out.lower()
 
 
-@pytest.mark.parametrize(
-    "mode,applescript,expected",
-    [
-        ("auto", True, "native"),  # macOS + AppleScript -> native
-        ("auto", False, "api"),  # no AppleScript -> api
-        ("native", True, "native"),  # pinned native on macOS
-        ("native", False, "api"),  # pinned native off-Mac -> falls back to api (no AppleScript)
-        ("api", True, "api"),  # pinned api even on macOS
-    ],
-)
-def test_engine_mode(monkeypatch, mode, applescript, expected):
-    monkeypatch.delenv("APPLEMUSIC_FORCE_API_MODE", raising=False)
-    monkeypatch.setattr(server, "get_user_preferences", lambda: {"mode": mode})
-    monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", applescript)
-    assert server._engine() == expected
-
-
-def test_force_api_mode_env(monkeypatch):
-    monkeypatch.setenv("APPLEMUSIC_FORCE_API_MODE", "1")
-    monkeypatch.setattr(server, "get_user_preferences", lambda: {"mode": "native"})
-    monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
+def test_engine_is_always_api(monkeypatch):
+    monkeypatch.setattr(server, "get_user_preferences", lambda: {"mode": "chrome"})
     assert server._engine() == "api"
-
-
-def test_api_mode_implies_browser_playback(monkeypatch):
-    monkeypatch.delenv("APPLEMUSIC_FORCE_BROWSER_PLAYBACK", raising=False)
-    monkeypatch.setattr(server, "get_user_preferences", lambda: {"mode": "api", "playback": "auto"})
-    monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-    assert server._use_browser_playback() is True
 
 
 def test_playback_tool_registered_unconditionally():
@@ -142,31 +92,15 @@ def test_playback_tool_registered_unconditionally():
     assert callable(getattr(server, "playback", None))
 
 
-def test_playback_play_routes_to_browser_on_non_mac(monkeypatch):
-    """Non-mac, browser engine: play dispatches to the browser, never the
-    (absent) AppleScript helper."""
-    monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
-    monkeypatch.setattr(server, "_use_browser_playback", lambda: True)
+def test_playback_play_routes_to_browser(monkeypatch):
     monkeypatch.setattr(server, "_browser_play", lambda *a, **k: "Playing: X")
     assert server.playback(action="play", track="X") == "Playing: X"
 
 
-def test_playback_native_pin_on_non_mac_gives_clear_message(monkeypatch):
-    """Non-mac with native playback pinned (no browser) returns an actionable
-    message instead of a NameError on the missing AppleScript helper."""
-    monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
-    monkeypatch.setattr(server, "get_user_preferences", lambda: {"mode": "native"})
-    out = server.playback(action="play", track="X")
-    assert out.startswith("Error") and "chrome" in out.lower()
-
-
 def test_playback_reveal_in_browser(monkeypatch):
-    """reveal now works cross-platform: in browser mode it opens the track's
-    page in Chrome instead of being macOS-only."""
+    """reveal opens the track's page in Chrome."""
     import applemusic_mcp.browser as browser
 
-    monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
-    monkeypatch.setattr(server, "_use_browser_playback", lambda: True)
     monkeypatch.setattr(
         server,
         "_resolve_catalog_track_itunes",

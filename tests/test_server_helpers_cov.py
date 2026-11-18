@@ -4,18 +4,17 @@ Covers the line ranges assigned to this slice:
   118-963, 1182-1330, 1462-2410
 """
 
-import csv
 import json
 import os
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import applemusic_mcp.browser as _browser_module  # ensure module is loaded for patching
 import pytest
 import requests
 import responses
 
+import applemusic_mcp.browser as _browser_module  # ensure module is loaded for patching
 from applemusic_mcp import server
 
 # ---------------------------------------------------------------------------
@@ -719,20 +718,10 @@ class TestEngine:
         monkeypatch.setattr(server, "get_user_preferences", lambda: {"mode": "api"})
         assert server._engine() == "api"
 
-    def test_mode_native_with_applescript(self, monkeypatch):
-        monkeypatch.setattr(server, "get_user_preferences", lambda: {"mode": "native"})
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        assert server._engine() == "native"
-
     def test_mode_native_without_applescript(self, monkeypatch):
         monkeypatch.setattr(server, "get_user_preferences", lambda: {"mode": "native"})
         monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
         assert server._engine() == "api"
-
-    def test_mode_auto_with_applescript(self, monkeypatch):
-        monkeypatch.setattr(server, "get_user_preferences", lambda: {"mode": "auto"})
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        assert server._engine() == "native"
 
     def test_mode_auto_without_applescript(self, monkeypatch):
         monkeypatch.setattr(server, "get_user_preferences", lambda: {"mode": "auto"})
@@ -764,14 +753,10 @@ class TestUseBrowserPlayback:
         monkeypatch.setattr(server, "_engine", lambda: "api")
         assert server._use_browser_playback() is True
 
-    def test_follows_engine_native(self, monkeypatch):
-        monkeypatch.delenv("APPLEMUSIC_FORCE_BROWSER_PLAYBACK", raising=False)
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        assert server._use_browser_playback() is False
-
     def test_mode_pinned_native_helper(self, monkeypatch):
+        # No native engine exists in this build, so the preference never pins one.
         monkeypatch.setattr(server, "get_user_preferences", lambda: {"mode": "native"})
-        assert server._mode_pinned_native() is True
+        assert server._mode_pinned_native() is False
         monkeypatch.setattr(server, "get_user_preferences", lambda: {"mode": "auto"})
         assert server._mode_pinned_native() is False
         monkeypatch.setattr(server, "get_user_preferences", lambda: {"mode": "web"})
@@ -784,24 +769,6 @@ class TestUseBrowserPlayback:
 
 
 class TestWriteRail:
-    def test_macos_uses_native_regardless_of_mode(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.delenv("APPLEMUSIC_FORCE_TOKENLESS", raising=False)
-        # Even pinned to web *playback*, writes stay native on macOS.
-        monkeypatch.setattr(server, "get_user_preferences", lambda: {"mode": "web"})
-        for op in ("create", "delete", "rename", "move", "remove"):
-            assert server._write_rail(op) == "native"
-
-    def test_macos_catalog_add_needs_api(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.delenv("APPLEMUSIC_FORCE_TOKENLESS", raising=False)
-        monkeypatch.setattr(server, "_has_developer_token", lambda: True)
-        assert server._write_rail("add", catalog=True) == "sanctioned"
-        monkeypatch.setattr(server, "_has_developer_token", lambda: False)
-        assert server._write_rail("add", catalog=True) == "web"
-        # a non-catalog add on macOS stays native (AppleScript)
-        assert server._write_rail("add", catalog=False) == "native"
-
     def test_off_macos_dev_token_is_sanctioned(self, monkeypatch):
         monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
         monkeypatch.setattr(server, "_has_developer_token", lambda: True)
@@ -813,59 +780,18 @@ class TestWriteRail:
         monkeypatch.setattr(server, "_has_developer_token", lambda: False)
         assert server._write_rail("create") == "web"
 
-    def test_off_macos_gap_ops_always_web(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
-        monkeypatch.setattr(server, "_has_developer_token", lambda: True)  # even with a dev token
+    def test_rail_is_op_independent(self, monkeypatch):
+        # Every write op takes the same rail: the dev token decides, not the op.
+        monkeypatch.setattr(server, "_has_developer_token", lambda: True)
         for op in ("delete", "remove", "rename", "move", "create_folder"):
-            assert server._write_rail(op) == "web"
+            assert server._write_rail(op) == "sanctioned"
 
     def test_label_write_appends_only_on_success(self):
         assert (
             server._label_write("Created 'X'", "sanctioned") == "Created 'X' (via Apple Music API)"
         )
         assert server._label_write("Error: nope", "web") == "Error: nope"
-        assert server._label_write("Deleted", "native") == "Deleted (via Music.app)"
-
-
-# ---------------------------------------------------------------------------
-# _format_applescript_error
-# ---------------------------------------------------------------------------
-
-
-class TestFormatApplescriptError:
-    def test_music_not_running(self):
-        raw = "application Music isn't running"
-        out = server._format_applescript_error(raw, "list playlists")
-        assert "Music.app" in out
-        assert "isn't running" in out.lower() or "running" in out.lower()
-        assert "list playlists" in out
-
-    def test_automation_denied(self):
-        raw = "-1743 Not authorized to send Apple events"
-        out = server._format_applescript_error(raw)
-        assert "Automation permission" in out or "permission" in out.lower()
-
-    def test_timeout(self):
-        raw = "AppleScript timed out after 30 seconds"
-        out = server._format_applescript_error(raw, "add track")
-        assert "timed out" in out.lower()
-        assert "add track" in out
-
-    def test_syntax_error(self):
-        raw = "syntax error - Expected end of line but found identifier"
-        out = server._format_applescript_error(raw)
-        assert "syntax error" in out.lower()
-
-    def test_unknown_error(self):
-        raw = "some unknown applescript error"
-        out = server._format_applescript_error(raw)
-        assert "some unknown applescript error" in out
-
-    def test_no_operation(self):
-        raw = "application Music isn't running"
-        out = server._format_applescript_error(raw)
-        # No "()" parens without an operation
-        assert "( )" not in out
+        assert server._label_write("Deleted", "native") == "Deleted"
 
 
 # ---------------------------------------------------------------------------
@@ -1600,482 +1526,6 @@ class TestAddToLibraryApi:
 
 
 # ---------------------------------------------------------------------------
-# _verify_track_not_in_playlist / _verify_track_in_playlist
-# ---------------------------------------------------------------------------
-
-
-class TestVerifyTrackNotInPlaylist:
-    def test_no_applescript_returns_false(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
-        assert server._verify_track_not_in_playlist("Playlist", "Song", "Artist") is False
-
-    def test_empty_track_name_returns_false(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        assert server._verify_track_not_in_playlist("Playlist", "", "Artist") is False
-
-    def test_track_absent_returns_true(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(
-            server.asc, "track_exists_in_playlist", lambda pl, tr, ar: (True, False)
-        )
-        with patch("time.sleep"):
-            result = server._verify_track_not_in_playlist("Playlist", "Song", "Artist")
-        assert result is True
-
-    def test_track_present_returns_false(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server.asc, "track_exists_in_playlist", lambda pl, tr, ar: (True, True))
-        with patch("time.sleep"):
-            result = server._verify_track_not_in_playlist("Playlist", "Song", "Artist")
-        assert result is False
-
-
-class TestVerifyTrackInPlaylist:
-    def test_no_applescript_returns_false(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
-        with patch("time.sleep"):
-            assert server._verify_track_in_playlist("Playlist", "Song", "Artist") is False
-
-    def test_empty_track_name_returns_false(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        with patch("time.sleep"):
-            assert server._verify_track_in_playlist("Playlist", "", "Artist") is False
-
-    def test_track_present_returns_true(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server.asc, "track_exists_in_playlist", lambda pl, tr, ar: (True, True))
-        with patch("time.sleep"):
-            result = server._verify_track_in_playlist("Playlist", "Song", "Artist")
-        assert result is True
-
-    def test_track_absent_returns_false(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(
-            server.asc, "track_exists_in_playlist", lambda pl, tr, ar: (True, False)
-        )
-        with patch("time.sleep"):
-            result = server._verify_track_in_playlist("Playlist", "Song", "Artist")
-        assert result is False
-
-
-# ---------------------------------------------------------------------------
-# _smart_as_add_track_to_playlist
-# ---------------------------------------------------------------------------
-
-
-class TestSmartAsAddTrackToPlaylist:
-    def test_success_first_try(self, monkeypatch):
-        monkeypatch.setattr(
-            server.asc, "add_track_to_playlist", lambda pl, tr, ar, al: (True, "ok")
-        )
-        ok, result, pair = server._smart_as_add_track_to_playlist(
-            "Playlist", "Song", "Artist", None
-        )
-        assert ok is True
-        assert pair is None
-
-    def test_failure_with_artist(self, monkeypatch):
-        monkeypatch.setattr(
-            server.asc, "add_track_to_playlist", lambda pl, tr, ar, al: (False, "Track not found")
-        )
-        ok, result, pair = server._smart_as_add_track_to_playlist(
-            "Playlist", "Song", "Artist", None
-        )
-        assert ok is False
-        assert pair is None
-
-    def test_failure_with_album(self, monkeypatch):
-        monkeypatch.setattr(
-            server.asc, "add_track_to_playlist", lambda pl, tr, ar, al: (False, "Track not found")
-        )
-        ok, result, pair = server._smart_as_add_track_to_playlist(
-            "Playlist", "Song - Artist", None, "Album"
-        )
-        assert ok is False
-
-    def test_failure_no_dash_in_name(self, monkeypatch):
-        monkeypatch.setattr(
-            server.asc, "add_track_to_playlist", lambda pl, tr, ar, al: (False, "Track not found")
-        )
-        ok, result, pair = server._smart_as_add_track_to_playlist(
-            "Playlist", "NoSeparator", None, None
-        )
-        assert ok is False
-
-    def test_failure_other_error(self, monkeypatch):
-        monkeypatch.setattr(
-            server.asc, "add_track_to_playlist", lambda pl, tr, ar, al: (False, "Automation denied")
-        )
-        ok, result, pair = server._smart_as_add_track_to_playlist(
-            "Playlist", "Song - Artist", None, None
-        )
-        assert ok is False
-
-    def test_split_success_with_verify(self, monkeypatch):
-        call_count = [0]
-
-        def mock_add(pl, tr, ar, al):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                return False, "Track not found"  # first attempt fails
-            return True, "Added"  # split attempt succeeds
-
-        monkeypatch.setattr(server.asc, "add_track_to_playlist", mock_add)
-        monkeypatch.setattr(server, "_verify_track_in_playlist", lambda pl, tr, ar: True)
-        with patch("time.sleep"):
-            ok, result, pair = server._smart_as_add_track_to_playlist(
-                "Playlist", "Song - Artist", None, None
-            )
-        assert ok is True
-        assert pair is not None
-        assert pair == ("Song", "Artist")
-
-    def test_split_verify_failure(self, monkeypatch):
-        call_count = [0]
-
-        def mock_add(pl, tr, ar, al):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                return False, "Track not found"
-            return True, "Added"
-
-        monkeypatch.setattr(server.asc, "add_track_to_playlist", mock_add)
-        monkeypatch.setattr(server, "_verify_track_in_playlist", lambda pl, tr, ar: False)
-        with patch("time.sleep"):
-            ok, result, pair = server._smart_as_add_track_to_playlist(
-                "Playlist", "Song - Artist", None, None
-            )
-        assert ok is False
-        assert "could not verify" in result
-
-
-# ---------------------------------------------------------------------------
-# _auto_search_and_add_to_playlist
-# ---------------------------------------------------------------------------
-
-
-class TestAutoSearchAndAddToPlaylist:
-    @responses.activate
-    def test_success_api_created(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        # Catalog search
-        responses.add(
-            responses.GET,
-            "https://api.music.apple.com/v1/catalog/us/search",
-            json={
-                "results": {
-                    "songs": {
-                        "data": [
-                            {
-                                "id": "cat123",
-                                "attributes": {"name": "Hey Jude", "artistName": "The Beatles"},
-                            }
-                        ]
-                    }
-                }
-            },
-            status=200,
-        )
-        # Add to library
-        responses.add(
-            responses.POST,
-            "https://api.music.apple.com/v1/me/library",
-            status=202,
-        )
-        # Resolve to an API-created playlist → sanctioned dev-token POST
-        monkeypatch.setattr(
-            server.amp_api,
-            "resolve_playlist",
-            lambda name, api_created_only=True: {
-                "id": "p.rock",
-                "name": "Rock Hits",
-                "canEdit": True,
-            },
-        )
-        responses.add(
-            responses.POST,
-            "https://api.music.apple.com/v1/me/library/playlists/p.rock/tracks",
-            status=204,
-        )
-        ok, msg, steps = server._auto_search_and_add_to_playlist(
-            "Hey Jude", "The Beatles", "Rock Hits"
-        )
-        assert ok is True
-        assert "Hey Jude" in msg
-
-    @responses.activate
-    def test_success_app_made_routes_to_native(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """A Music.app-made (canEdit=False) playlist attaches via NATIVE AppleScript
-        — the web/amp-api rail 500s on these (verified), so it must not be used."""
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        responses.add(
-            responses.GET,
-            "https://api.music.apple.com/v1/catalog/us/search",
-            json={
-                "results": {
-                    "songs": {
-                        "data": [
-                            {"id": "cat1", "attributes": {"name": "So What", "artistName": "Miles"}}
-                        ]
-                    }
-                }
-            },
-            status=200,
-        )
-        responses.add(responses.POST, "https://api.music.apple.com/v1/me/library", status=202)
-        # user-made playlist (pl.u- globalId) → kind 'user'
-        monkeypatch.setattr(
-            server.amp_api,
-            "resolve_playlist",
-            lambda name, api_created_only=True: {
-                "id": "p.app",
-                "name": name,
-                "canEdit": False,
-                "globalId": "pl.u-abc",
-            },
-        )
-        monkeypatch.setattr(server.asc, "update_cloud_library", lambda: (True, "ok"))
-        # the catalog track is "synced locally" so the poll breaks and we attach
-        monkeypatch.setattr(server.asc, "find_library_track", lambda n, a: (True, f"{n}|||{a}"))
-        # the web rail must NOT be called for a user-made playlist
-        monkeypatch.setattr(
-            server.amp_api,
-            "add_tracks",
-            lambda pid, items: (_ for _ in ()).throw(AssertionError("web rail must not run")),
-        )
-        native_calls = []
-        monkeypatch.setattr(
-            server,
-            "_smart_as_add_track_to_playlist",
-            lambda pl, n, a, al: native_calls.append((pl, n)) or (True, "ok", None),
-        )
-        monkeypatch.setattr(server, "_verify_track_in_playlist", lambda pl, n, a: True)
-        ok, msg, steps = server._auto_search_and_add_to_playlist("So What", "Miles", "Alice & Bob")
-        assert ok is True and "So What" in msg
-        # per-leg method attribution: library via the API, playlist via Music.app
-        assert "added to library via the Apple Music API" in msg
-        assert "attached to playlist via Music.app" in msg
-        assert native_calls == [("Alice & Bob", "So What")]  # attached natively
-
-    @responses.activate
-    def test_catalog_search_not_found(self, mock_config_dir, mock_developer_token, mock_user_token):
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        responses.add(
-            responses.GET,
-            "https://api.music.apple.com/v1/catalog/us/search",
-            json={"results": {"songs": {"data": []}}},
-            status=200,
-        )
-        ok, msg, steps = server._auto_search_and_add_to_playlist("Nonexistent", "", "Playlist")
-        assert ok is False
-        assert "not found" in msg.lower()
-
-    @responses.activate
-    def test_catalog_search_api_error(self, mock_config_dir, mock_developer_token, mock_user_token):
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        responses.add(
-            responses.GET,
-            "https://api.music.apple.com/v1/catalog/us/search",
-            status=500,
-        )
-        ok, msg, steps = server._auto_search_and_add_to_playlist("Song", "", "Playlist")
-        assert ok is False
-
-    @responses.activate
-    def test_add_to_library_fails(self, mock_config_dir, mock_developer_token, mock_user_token):
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        responses.add(
-            responses.GET,
-            "https://api.music.apple.com/v1/catalog/us/search",
-            json={
-                "results": {
-                    "songs": {
-                        "data": [
-                            {"id": "c1", "attributes": {"name": "Song", "artistName": "Artist"}}
-                        ]
-                    }
-                }
-            },
-            status=200,
-        )
-        responses.add(
-            responses.POST,
-            "https://api.music.apple.com/v1/me/library",
-            status=401,
-        )
-        ok, msg, steps = server._auto_search_and_add_to_playlist("Song", "Artist", "Playlist")
-        assert ok is False
-
-    @responses.activate
-    def test_playlist_not_found(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        responses.add(
-            responses.GET,
-            "https://api.music.apple.com/v1/catalog/us/search",
-            json={
-                "results": {
-                    "songs": {
-                        "data": [
-                            {"id": "c1", "attributes": {"name": "Song", "artistName": "Artist"}}
-                        ]
-                    }
-                }
-            },
-            status=200,
-        )
-        responses.add(
-            responses.POST,
-            "https://api.music.apple.com/v1/me/library",
-            status=202,
-        )
-        monkeypatch.setattr(
-            server.amp_api, "resolve_playlist", lambda name, api_created_only=True: None
-        )
-        ok, msg, steps = server._auto_search_and_add_to_playlist(
-            "Song", "Artist", "Nonexistent Playlist"
-        )
-        assert ok is False
-        assert "Could not find playlist" in msg
-
-    @responses.activate
-    def test_playlist_id_provided_skips_lookup(
-        self, mock_config_dir, mock_developer_token, mock_user_token
-    ):
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        responses.add(
-            responses.GET,
-            "https://api.music.apple.com/v1/catalog/us/search",
-            json={
-                "results": {
-                    "songs": {
-                        "data": [
-                            {"id": "c1", "attributes": {"name": "Song", "artistName": "Artist"}}
-                        ]
-                    }
-                }
-            },
-            status=200,
-        )
-        responses.add(
-            responses.POST,
-            "https://api.music.apple.com/v1/me/library",
-            status=202,
-        )
-        responses.add(
-            responses.POST,
-            "https://api.music.apple.com/v1/me/library/playlists/p.known/tracks",
-            status=204,
-        )
-        ok, msg, steps = server._auto_search_and_add_to_playlist(
-            "Song", "Artist", "My Playlist", playlist_id="p.known"
-        )
-        assert ok is True
-
-    @responses.activate
-    def test_add_to_playlist_fails(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        # dev-token POST 500s, then the web-session fallback also fails → error.
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        responses.add(
-            responses.GET,
-            "https://api.music.apple.com/v1/catalog/us/search",
-            json={
-                "results": {
-                    "songs": {
-                        "data": [
-                            {"id": "c1", "attributes": {"name": "Song", "artistName": "Artist"}}
-                        ]
-                    }
-                }
-            },
-            status=200,
-        )
-        responses.add(
-            responses.POST,
-            "https://api.music.apple.com/v1/me/library",
-            status=202,
-        )
-        responses.add(
-            responses.POST,
-            "https://api.music.apple.com/v1/me/library/playlists/p.known/tracks",
-            status=500,
-        )
-        monkeypatch.setattr(
-            server.amp_api, "add_tracks", lambda pid, items: (False, "status 403: forbidden")
-        )
-        ok, msg, steps = server._auto_search_and_add_to_playlist(
-            "Song", "Artist", "My Playlist", playlist_id="p.known"
-        )
-        assert ok is False
-        assert "Failed to add to playlist" in msg
-
-
-# ---------------------------------------------------------------------------
-# _unified_auto_search_to_playlist
-# ---------------------------------------------------------------------------
-
-
-class TestUnifiedAutoSearchToPlaylist:
-    def test_no_library_api_available(self, monkeypatch):
-        monkeypatch.setattr(server, "_can_use_library_api", lambda: False)
-        ok, msg, steps = server._unified_auto_search_to_playlist("Song", "Artist", "Playlist")
-        assert ok is False
-        assert "login" in msg
-
-    @responses.activate
-    def test_splits_combined_name(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        monkeypatch.setattr(server, "_can_use_library_api", lambda: True)
-        # No artist provided, "Song - Artist" in track_name → gets split
-        responses.add(
-            responses.GET,
-            "https://api.music.apple.com/v1/catalog/us/search",
-            json={
-                "results": {
-                    "songs": {
-                        "data": [
-                            {"id": "c1", "attributes": {"name": "Song", "artistName": "Artist"}}
-                        ]
-                    }
-                }
-            },
-            status=200,
-        )
-        responses.add(
-            responses.POST,
-            "https://api.music.apple.com/v1/me/library",
-            status=202,
-        )
-        responses.add(
-            responses.GET,
-            "https://api.music.apple.com/v1/me/library/playlists",
-            json={"data": [{"id": "p.rock", "attributes": {"name": "Rock Hits", "canEdit": True}}]},
-            status=200,
-        )
-        responses.add(
-            responses.POST,
-            "https://api.music.apple.com/v1/me/library/playlists/p.rock/tracks",
-            status=204,
-        )
-        monkeypatch.setattr(server, "_verify_track_in_playlist", lambda pl, tr, ar: True)
-        with patch("time.sleep"):
-            ok, msg, steps = server._unified_auto_search_to_playlist(
-                "Song - Artist", "", "Rock Hits"
-            )
-        assert any("Split" in s for s in steps)
-
-
-# ---------------------------------------------------------------------------
 # _rate_song_api
 # ---------------------------------------------------------------------------
 
@@ -2559,52 +2009,6 @@ class TestAddToLibraryApiException:
         assert "connection refused" in msg
 
 
-class TestSmartAsAddAllCandidatesFail:
-    """server.py:2116 — return False when ALL split candidates fail."""
-
-    def test_all_split_candidates_fail(self, monkeypatch):
-        # Always return failure (Track not found → triggers split, split also fails)
-        monkeypatch.setattr(
-            server.asc, "add_track_to_playlist", lambda pl, tr, ar, al: (False, "Track not found")
-        )
-        ok, result, pair = server._smart_as_add_track_to_playlist(
-            "Playlist", "Song - Artist", None, None
-        )
-        assert ok is False
-        assert pair is None
-        assert result == "Track not found"
-
-
-class TestUnifiedAutoSearchPropagationLag:
-    """server.py:2241-2247 — API reports ok but verify returns False (propagation lag)."""
-
-    def test_ok_but_verify_fails_returns_success_with_note(self, monkeypatch):
-        monkeypatch.setattr(server, "_can_use_library_api", lambda: True)
-        monkeypatch.setattr(
-            server,
-            "_auto_search_and_add_to_playlist",
-            lambda tr, ar, pl, playlist_id=None: (True, "Hey Jude - The Beatles", []),
-        )
-        monkeypatch.setattr(server, "_verify_track_in_playlist", lambda pl, tr, ar: False)
-        with patch("time.sleep"):
-            ok, msg, steps = server._unified_auto_search_to_playlist(
-                "Hey Jude", "Beatles", "Playlist"
-            )
-        assert ok is True
-        assert any("propagation" in s for s in steps)
-
-
-class TestAutoSearchAndAddException:
-    """server.py:2370-2371 — except branch when requests.get raises during catalog search."""
-
-    def test_exception_returns_error(self, mock_config_dir, mock_developer_token, mock_user_token):
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        with patch("requests.get", side_effect=ConnectionError("network error")):
-            ok, msg, steps = server._auto_search_and_add_to_playlist("Song", "Artist", "Playlist")
-        assert ok is False
-        assert "Error" in msg
-
-
 class TestRateSongApiException:
     """server.py:2405-2406 — except branch when requests.put raises."""
 
@@ -2636,33 +2040,6 @@ class TestTokenExpirationWarningAutoRenews:
         assert result is None
 
 
-# ---------------------------------------------------------------------------
-# _unified_auto_search_to_playlist — line 2247 (ok=False propagation)
-# ---------------------------------------------------------------------------
-
-
-class TestUnifiedAutoSearchApiFailure:
-    """server.py:2247 — when _auto_search_and_add_to_playlist returns ok=False."""
-
-    def test_api_failure_propagated(self, mock_config_dir, mock_developer_token, mock_user_token):
-        # Ensure both tokens exist so _can_use_library_api() returns True,
-        # then mock _auto_search_and_add_to_playlist to simulate a catalog failure.
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        with (
-            patch.object(server, "_can_use_library_api", return_value=True),
-            patch.object(
-                server,
-                "_auto_search_and_add_to_playlist",
-                return_value=(False, "Catalog search failed", ["searched catalog"]),
-            ),
-        ):
-            ok, msg, steps = server._unified_auto_search_to_playlist(
-                "Song Title", "Artist Name", "My Playlist"
-            )
-        assert ok is False
-        assert "Catalog search failed" in msg
-
-
 def test_attach_error_translates_10006():
     """The track-specific -10006 (stuck cloud/shared reference) gets a friendly,
     actionable message instead of the raw AppleScript error."""
@@ -2680,7 +2057,6 @@ def test_attach_error_translates_10006():
 def test_gc_exports_bounds_dir(tmp_path, monkeypatch):
     """_gc_exports drops old timestamped exports and caps count, but never touches
     cache.json / the audit log / snapshots."""
-    import os
     import time as _t
 
     old = tmp_path / "library_19990101_000000.csv"
@@ -2695,15 +2071,6 @@ def test_gc_exports_bounds_dir(tmp_path, monkeypatch):
     server._gc_exports(tmp_path)
     assert not old.exists()  # aged out
     assert new.exists() and keep.exists() and audit.exists()
-
-
-def test_play_after_add_distinguishes_real_failure_from_sync_lag():
-    """A non-transient play failure (Automation denied / Music not running) is
-    surfaced; a transient 'not synced yet' stays the honest 'sync pending'."""
-    denied = server._play_after_add("X by Y", "Not authorized to send Apple events")
-    assert "permission denied" in denied.lower() and "sync pending" not in denied.lower()
-    transient = server._play_after_add("X by Y", "Track not found")
-    assert "sync pending" in transient.lower()
 
 
 def test_id_based_add_classifies_catalog_id():

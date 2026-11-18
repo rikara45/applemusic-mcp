@@ -9,14 +9,11 @@ Strategy:
 import csv
 import json
 import time
-from typing import Optional
-from unittest.mock import MagicMock, patch
 
 import pytest
 import responses as responses_lib
 
 from applemusic_mcp import server
-from applemusic_mcp import amp_api as _amp_api_module
 
 
 @pytest.fixture(autouse=True)
@@ -609,11 +606,9 @@ class TestResolvePlaylist:
         assert resolved.error is None
 
     def test_name_not_id(self, monkeypatch):
-        # "p.s. I love you" is a name, not an ID (has spaces)
-        # Stub the lookups the name path consults so resolution stays offline:
-        # no API match, and an empty native playlist list → raw-name fallback.
+        # "p.s. I love you" is a name, not an ID (has spaces).
+        # Stub the lookup the name path consults so resolution stays offline.
         monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, []))
         resolved = server._resolve_playlist("p.s. I love you")
         # Should NOT be treated as an ID
         assert resolved.api_id != "p.s. I love you" or resolved.api_id is None
@@ -631,37 +626,12 @@ class TestResolvePlaylist:
         assert resolved.api_id == "p.api1"
         assert resolved.error is None
 
-    def test_fallback_to_applescript_when_api_fails(self, monkeypatch):
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(
-            server.asc,
-            "get_playlists",
-            lambda: (
-                True,
-                [
-                    {"name": "Jazz Mix", "id": "jz1"},
-                ],
-            ),
-        )
-        resolved = server._resolve_playlist("Jazz Mix")
-        assert resolved.applescript_name == "Jazz Mix"
-        assert resolved.error is None
-
     def test_fallback_to_raw_when_applescript_fails(self, monkeypatch):
         monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
         resolved = server._resolve_playlist("My Playlist")
-        assert resolved.applescript_name == "My Playlist"
-        assert resolved.error is None
-
-    def test_applescript_get_playlists_fails(self, monkeypatch):
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (False, "error"))
-        resolved = server._resolve_playlist("My Playlist")
-        # Falls back to raw input
-        assert resolved.applescript_name == "My Playlist"
+        assert resolved.api_id is None
+        assert "not found" in resolved.error.lower()
+        assert "p.XXX" in resolved.error
 
 
 # ---------------------------------------------------------------------------
@@ -787,33 +757,14 @@ class TestFindTrackInList:
 
 
 class TestPlaylistCreate:
-    def test_applescript_success(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(
-            server.asc, "create_playlist", lambda name, desc="": (True, "PERSIST001")
-        )
-        result = server._playlist_create("New Playlist", "A cool playlist")
-        assert "Created" in result
-        assert "New Playlist" in result
-        assert "PERSIST001" in result
-
-    def test_applescript_failure(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(
-            server.asc, "create_playlist", lambda name, desc="": (False, "Music.app not running")
-        )
-        result = server._playlist_create("New Playlist")
-        assert "Error" in result
-
     @responses_lib.activate
     def test_api_fallback_success(
         self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
     ):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
         _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
         responses_lib.add(
             responses_lib.POST,
-            "https://api.music.apple.com/v1/me/library/playlists",
+            "https://amp-api.music.apple.com/v1/me/library/playlists",
             json={"data": [{"id": "p.apipl1"}]},
             status=200,
         )
@@ -828,11 +779,10 @@ class TestPlaylistCreate:
     ):
         import requests as req_lib
 
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
         _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
         responses_lib.add(
             responses_lib.POST,
-            "https://api.music.apple.com/v1/me/library/playlists",
+            "https://amp-api.music.apple.com/v1/me/library/playlists",
             body=req_lib.exceptions.ConnectionError("connection error"),
         )
         result = server._playlist_create("API Playlist")
@@ -847,105 +797,55 @@ class TestPlaylistCreate:
 
 
 # ---------------------------------------------------------------------------
-# _macos_only  (lines 3064-3072)
-# ---------------------------------------------------------------------------
-
-
-class TestMacosOnly:
-    def test_not_available_returns_error(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
-        result = server._macos_only("rename")
-        assert result is not None
-        assert "Error" in result
-        assert "rename" in result
-        assert "macOS" in result
-
-    def test_available_returns_none(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        result = server._macos_only("rename")
-        assert result is None
-
-
-# ---------------------------------------------------------------------------
-# _playlist_create_folder  (lines 3075-3117)
+# _playlist_create_folder
 # ---------------------------------------------------------------------------
 
 
 class TestPlaylistCreateFolder:
-    def test_applescript_single_level_success(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server.asc, "create_folder", lambda name: (True, "f.fld1"))
-        result = server._playlist_create_folder("Summer")
-        assert "Created" in result
-        assert "Summer" in result
-        assert "f.fld1" in result
-
-    def test_applescript_multi_level_success(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server.asc, "create_folder_path", lambda path: (True, "f.nested"))
-        result = server._playlist_create_folder("Summer/Chill/Deep")
-        assert "Created" in result
-        assert "Summer/Chill/Deep" in result
-
-    def test_applescript_failure(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server.asc, "create_folder", lambda name: (False, "not supported"))
-        result = server._playlist_create_folder("MyFolder")
-        assert "Error" in result
-
-    def test_api_fallback_nested_path_rejected(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
+    def test_nested_path_rejected(self, monkeypatch):
         result = server._playlist_create_folder("Summer/Chill")
         assert "Error" in result
-        assert "macOS" in result or "Nested" in result
+        assert "single-level" in result
+        assert "Chill" in result
 
     @responses_lib.activate
-    def test_api_fallback_single_success(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
+    def test_single_success(self, mock_config_dir, mock_developer_token, mock_user_token):
         _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
         responses_lib.add(
             responses_lib.POST,
-            "https://api.music.apple.com/v1/me/library/playlist-folders",
+            "https://amp-api.music.apple.com/v1/me/library/playlist-folders",
             json={"data": [{"id": "f.apifld1"}]},
             status=201,
         )
         result = server._playlist_create_folder("API Folder")
         assert "Created" in result
         assert "API Folder" in result
+        assert "f.apifld1" in result
 
     @responses_lib.activate
-    def test_api_fallback_error_status(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
+    def test_error_status(self, mock_config_dir, mock_developer_token, mock_user_token):
         _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
         responses_lib.add(
             responses_lib.POST,
-            "https://api.music.apple.com/v1/me/library/playlist-folders",
+            "https://amp-api.music.apple.com/v1/me/library/playlist-folders",
             status=400,
         )
         result = server._playlist_create_folder("Bad Folder")
         assert "Error" in result
 
-    def test_api_fallback_no_token(self, mock_config_dir, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
-        # mock_config_dir exists but has no token files -> FileNotFoundError inside get_headers()
+    def test_no_token(self, mock_config_dir):
+        # mock_config_dir exists but has no token files -> header resolution fails
         result = server._playlist_create_folder("Folder")
-        assert "Error" in result or "API" in result
+        assert "Error" in result
 
     @responses_lib.activate
-    def test_api_fallback_request_exception(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
+    def test_request_exception(self, mock_config_dir, mock_developer_token, mock_user_token):
         import requests as req_lib
 
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
         _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
         responses_lib.add(
             responses_lib.POST,
-            "https://api.music.apple.com/v1/me/library/playlist-folders",
+            "https://amp-api.music.apple.com/v1/me/library/playlist-folders",
             body=req_lib.exceptions.ConnectionError("connection error"),
         )
         result = server._playlist_create_folder("MyFolder")
@@ -953,149 +853,129 @@ class TestPlaylistCreateFolder:
 
 
 # ---------------------------------------------------------------------------
-# _playlist_tree, _playlist_path  (lines 3120-3139)
+# _playlist_tree, _playlist_path
 # ---------------------------------------------------------------------------
 
 
 class TestPlaylistTree:
-    def test_no_applescript_error(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
-        result = server._playlist_tree()
-        assert "Error" in result
-        assert "macOS" in result
-
     def test_success(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
         monkeypatch.setattr(
-            server.asc, "get_folder_tree", lambda: (True, "Summer\n  Chill\nWinter")
+            server.amp_api,
+            "list_folders",
+            lambda: [{"id": "f.1", "name": "Summer"}, {"id": "f.2", "name": "Winter"}],
         )
         result = server._playlist_tree()
         assert "Summer" in result
+        assert "f.1" in result
 
     def test_empty_tree(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server.asc, "get_folder_tree", lambda: (True, "   "))
+        monkeypatch.setattr(server.amp_api, "list_folders", lambda: [])
         result = server._playlist_tree()
         assert "No folders" in result
 
-    def test_failure(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server.asc, "get_folder_tree", lambda: (False, "AS error"))
-        result = server._playlist_tree()
-        assert "Error" in result
-
 
 class TestPlaylistPath:
-    def test_no_applescript_error(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
+    def test_not_available_over_the_api(self, monkeypatch):
         result = server._playlist_path("My Playlist")
         assert "Error" in result
-        assert "macOS" in result
-
-    def test_no_name_error(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        result = server._playlist_path("")
-        assert "Error" in result
-
-    def test_success(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server.asc, "get_playlist_path", lambda name: (True, "Summer/Chill"))
-        result = server._playlist_path("My Playlist")
-        assert "Summer/Chill" in result
-
-    def test_failure(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server.asc, "get_playlist_path", lambda name: (False, "not found"))
-        result = server._playlist_path("My Playlist")
-        assert "Error" in result
+        assert "aren't available over the Apple Music API" in result
 
 
 # ---------------------------------------------------------------------------
-# _playlist_move, _playlist_move_to_root  (lines 3142-3163)
+# _playlist_move, _playlist_move_to_root
 # ---------------------------------------------------------------------------
 
 
 class TestPlaylistMove:
     def test_success(self, monkeypatch):
+        monkeypatch.setattr(server.amp_api, "resolve_playlist_id", lambda name, **k: "p.1")
+        monkeypatch.setattr(server.amp_api, "resolve_folder_id", lambda name: "f.1")
         monkeypatch.setattr(
-            server.asc, "move_to_folder", lambda pl, folder: (True, "Moved playlist")
+            server.amp_api, "move_playlist_to_folder", lambda pid, fid: (True, "")
         )
         result = server._playlist_move("My Playlist", "Summer")
-        assert "Moved" in result
+        assert result == "Moved 'My Playlist' into folder 'Summer'"
 
     def test_failure(self, monkeypatch):
-        monkeypatch.setattr(server.asc, "move_to_folder", lambda pl, folder: (False, "not found"))
+        monkeypatch.setattr(server.amp_api, "resolve_playlist_id", lambda name, **k: "p.1")
+        monkeypatch.setattr(server.amp_api, "resolve_folder_id", lambda name: "f.1")
+        monkeypatch.setattr(
+            server.amp_api, "move_playlist_to_folder", lambda pid, fid: (False, "not found")
+        )
         result = server._playlist_move("My Playlist", "Summer")
         assert "Error" in result
 
 
 class TestPlaylistMoveToRoot:
     def test_success(self, monkeypatch):
-        monkeypatch.setattr(server.asc, "move_to_root", lambda name: (True, "Moved to root"))
+        moved = []
+        monkeypatch.setattr(server.amp_api, "resolve_playlist_id", lambda name, **k: "p.1")
+        monkeypatch.setattr(
+            server.amp_api,
+            "move_playlist_to_folder",
+            lambda pid, fid: moved.append(fid) or (True, ""),
+        )
         result = server._playlist_move_to_root("My Playlist")
-        assert "root" in result.lower() or "Moved" in result
+        assert "top level" in result
+        assert moved == [server.amp_api.ROOT_FOLDER]
 
     def test_failure(self, monkeypatch):
-        monkeypatch.setattr(server.asc, "move_to_root", lambda name: (False, "not supported"))
+        monkeypatch.setattr(server.amp_api, "resolve_playlist_id", lambda name, **k: "p.1")
+        monkeypatch.setattr(
+            server.amp_api, "move_playlist_to_folder", lambda pid, fid: (False, "not supported")
+        )
         result = server._playlist_move_to_root("My Playlist")
         assert "Error" in result
 
 
 # ---------------------------------------------------------------------------
-# _playlist_create_in_folder  (lines 3166-3186)
+# _playlist_create_in_folder
 # ---------------------------------------------------------------------------
 
 
 class TestPlaylistCreateInFolder:
     def test_success_single_level_folder(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server.asc, "create_folder", lambda name: (True, "f.fld"))
+        monkeypatch.setattr(server.amp_api, "create_folder", lambda name, **k: (True, "f.fld"))
         monkeypatch.setattr(
-            server.asc, "create_playlist", lambda name, desc="": (True, "PERSIST01")
+            server.amp_api, "create_playlist", lambda name, desc="": (True, "p.new")
         )
-        monkeypatch.setattr(server.asc, "move_to_folder", lambda pl, folder: (True, "Moved"))
+        monkeypatch.setattr(
+            server.amp_api, "resolve_playlist_id", lambda name, **k: "p.new"
+        )
+        monkeypatch.setattr(server.amp_api, "resolve_folder_id", lambda name: "f.fld")
+        monkeypatch.setattr(
+            server.amp_api, "move_playlist_to_folder", lambda pid, fid: (True, "")
+        )
         result = server._playlist_create_in_folder("My PL", "Summer")
-        assert "Created" in result
-        assert "My PL" in result
-        assert "Summer" in result
-
-    def test_success_nested_folder(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server.asc, "create_folder_path", lambda path: (True, "f.nested"))
-        monkeypatch.setattr(
-            server.asc, "create_playlist", lambda name, desc="": (True, "PERSIST01")
-        )
-        monkeypatch.setattr(server.asc, "move_to_folder", lambda pl, folder: (True, "Moved"))
-        result = server._playlist_create_in_folder("My PL", "Summer/Chill")
-        assert "Created" in result
+        assert result == "Created playlist 'My PL' in folder 'Summer'"
 
     def test_create_fails(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server.asc, "create_folder", lambda name: (True, "f.fld"))
-        monkeypatch.setattr(server.asc, "create_playlist", lambda name, desc="": (False, "error"))
+        monkeypatch.setattr(server.amp_api, "create_folder", lambda name, **k: (True, "f.fld"))
+        monkeypatch.setattr(
+            server.amp_api, "create_playlist", lambda name, desc="": (False, "error")
+        )
         result = server._playlist_create_in_folder("My PL", "Summer")
         assert "Error" in result
 
-    def test_move_fails_rolls_back(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server.asc, "create_folder", lambda name: (True, "f.fld"))
+    def test_move_fails_keeps_the_playlist(self, monkeypatch):
+        monkeypatch.setattr(server.amp_api, "create_folder", lambda name, **k: (True, "f.fld"))
         monkeypatch.setattr(
-            server.asc, "create_playlist", lambda name, desc="": (True, "PERSIST01")
+            server.amp_api, "create_playlist", lambda name, desc="": (True, "p.new")
         )
         monkeypatch.setattr(
-            server.asc, "move_to_folder", lambda pl, folder: (False, "folder not found")
+            server.amp_api, "resolve_playlist_id", lambda name, **k: "p.new"
         )
-        deleted = []
+        monkeypatch.setattr(server.amp_api, "resolve_folder_id", lambda name: "f.fld")
         monkeypatch.setattr(
-            server.asc, "delete_playlist", lambda name: deleted.append(name) or (True, "ok")
+            server.amp_api, "move_playlist_to_folder", lambda pid, fid: (False, "folder not found")
         )
         result = server._playlist_create_in_folder("My PL", "Summer")
-        assert "Error" in result
-        assert "My PL" in deleted or len(deleted) == 1
+        assert "couldn't move it into 'Summer'" in result
+        assert "NOT removed" in result
 
 
 # ---------------------------------------------------------------------------
-# _playlist_delete_folder, _playlist_rename_folder  (lines 3189-3217)
+# _playlist_delete_folder, _playlist_rename_folder
 # ---------------------------------------------------------------------------
 
 
@@ -1105,38 +985,23 @@ class TestPlaylistDeleteFolder:
         assert "Error" in result
 
     def test_success(self, monkeypatch):
-        monkeypatch.setattr(server.asc, "delete_folder", lambda name: (True, "Deleted folder"))
+        monkeypatch.setattr(server.amp_api, "resolve_folder_id", lambda name: "f.1")
+        monkeypatch.setattr(server.amp_api, "delete_folder", lambda fid: (True, "Deleted"))
         result = server._playlist_delete_folder("Old Folder")
-        assert "Deleted" in result
+        assert result == "Deleted folder: Old Folder"
 
     def test_failure(self, monkeypatch):
-        monkeypatch.setattr(server.asc, "delete_folder", lambda name: (False, "not found"))
+        monkeypatch.setattr(server.amp_api, "resolve_folder_id", lambda name: "f.1")
+        monkeypatch.setattr(server.amp_api, "delete_folder", lambda fid: (False, "not found"))
         result = server._playlist_delete_folder("Old Folder")
         assert "Error" in result
 
 
 class TestPlaylistRenameFolder:
-    def test_no_folder_name_error(self, monkeypatch):
-        result = server._playlist_rename_folder("", "New Name")
+    def test_not_available_over_the_api(self, monkeypatch):
+        result = server._playlist_rename_folder("Old Folder", "New Name")
         assert "Error" in result
-        assert "folder name" in result.lower()
-
-    def test_no_new_name_error(self, monkeypatch):
-        result = server._playlist_rename_folder("Old Folder", "")
-        assert "Error" in result
-        assert "new_name" in result.lower()
-
-    def test_success(self, monkeypatch):
-        monkeypatch.setattr(
-            server.asc, "rename_playlist", lambda old, new: (True, f"Renamed {old} to {new}")
-        )
-        result = server._playlist_rename_folder("Old Folder", "New Folder")
-        assert "Renamed" in result or "New Folder" in result
-
-    def test_failure(self, monkeypatch):
-        monkeypatch.setattr(server.asc, "rename_playlist", lambda old, new: (False, "not found"))
-        result = server._playlist_rename_folder("Old", "New")
-        assert "Error" in result
+        assert "isn't available over the Apple Music API" in result
 
 
 # ---------------------------------------------------------------------------
@@ -1145,69 +1010,41 @@ class TestPlaylistRenameFolder:
 
 
 class TestPlaylistList:
-    def test_applescript_success(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(
-            server.asc,
-            "get_playlists",
-            lambda: (
-                True,
-                [
-                    {"id": "ABCD1234", "name": "Summer Hits", "track_count": 12, "smart": False},
-                    {"id": "EFGH5678", "name": "Chill Vibes", "track_count": 5, "smart": True},
-                ],
-            ),
-        )
-        result = server._playlist_list()
-        assert "Summer Hits" in result
-        assert "Chill Vibes" in result
-
-    def test_applescript_empty(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, []))
-        result = server._playlist_list()
-        assert "No playlists" in result
-
-    def test_filter_narrows_by_name(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(
-            server.asc,
-            "get_playlists",
-            lambda: (
-                True,
-                [
-                    {"id": "A", "name": "Alice & Bob", "track_count": 5, "smart": False},
-                    {"id": "B", "name": "Alice in Chains", "track_count": 3, "smart": False},
-                    {"id": "C", "name": "Reggae Tunes", "track_count": 9, "smart": False},
-                ],
-            ),
-        )
-        result = server._playlist_list(filter="alice")
+    def test_filter_narrows_by_name(self, mock_config_dir, mock_developer_token, mock_user_token):
+        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
+        data = [
+            {"id": "A", "attributes": {"name": "Alice & Bob"}},
+            {"id": "B", "attributes": {"name": "Alice in Chains"}},
+            {"id": "C", "attributes": {"name": "Reggae Tunes"}},
+        ]
+        with responses_lib.RequestsMock() as rsps:
+            rsps.add(
+                responses_lib.GET,
+                "https://api.music.apple.com/v1/me/library/playlists",
+                json={"data": data},
+                status=200,
+            )
+            result = server._playlist_list(filter="alice")
         assert "Alice & Bob" in result
         assert "Alice in Chains" in result
         assert "Reggae Tunes" not in result
 
-    def test_filter_no_match(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(
-            server.asc,
-            "get_playlists",
-            lambda: (True, [{"id": "C", "name": "Reggae Tunes", "track_count": 9, "smart": False}]),
-        )
-        result = server._playlist_list(filter="zzz")
+    def test_filter_no_match(self, mock_config_dir, mock_developer_token, mock_user_token):
+        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
+        with responses_lib.RequestsMock() as rsps:
+            rsps.add(
+                responses_lib.GET,
+                "https://api.music.apple.com/v1/me/library/playlists",
+                json={"data": [{"id": "C", "attributes": {"name": "Reggae Tunes"}}]},
+                status=200,
+            )
+            result = server._playlist_list(filter="zzz")
         assert "No playlists matching 'zzz'" in result
-
-    def test_applescript_failure(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (False, "Music.app not running"))
-        result = server._playlist_list()
-        assert "Error" in result
 
     @responses_lib.activate
     def test_api_fallback_success(
         self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
     ):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
         _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
         responses_lib.add(
             responses_lib.GET,
@@ -1226,7 +1063,6 @@ class TestPlaylistList:
     def test_api_fallback_404_stops_pagination(
         self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
     ):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
         _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
         responses_lib.add(
             responses_lib.GET,
@@ -1241,7 +1077,6 @@ class TestPlaylistList:
     def test_api_json_format(
         self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
     ):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
         _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
         responses_lib.add(
             responses_lib.GET,
@@ -1270,91 +1105,20 @@ class TestPlaylistTracks:
         result = server._playlist_tracks("")
         assert "Error" in result
 
-    def test_applescript_name_only_empty_playlist(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "Jazz Mix"}]))
-        monkeypatch.setattr(
-            server.asc, "get_playlist_tracks_page", _as_page(lambda name: (True, []))
+    @responses_lib.activate
+    def test_empty_playlist_from_api(
+        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
+    ):
+        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
+        responses_lib.add(
+            responses_lib.GET,
+            "https://api.music.apple.com/v1/me/library/playlists/p.empty/tracks",
+            status=404,
         )
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: {
-                "fetch_explicit": False,
-                "output_format": "text",
-                "mode": "auto",
-                "auto_add": False,
-                "storefront": "us",
-            },
-        )
-        result = server._playlist_tracks("Jazz Mix")
+        result = server._playlist_tracks("p.empty")
         assert "empty" in result.lower()
 
-    def test_applescript_tracks_success(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "Jazz Mix"}]))
-        monkeypatch.setattr(
-            server.asc,
-            "get_playlist_tracks_page",
-            _as_page(
-                lambda name: (
-                    True,
-                    [
-                        {
-                            "name": "So What",
-                            "artist": "Miles Davis",
-                            "album": "Kind of Blue",
-                            "duration": "9:22",
-                            "genre": "Jazz",
-                            "year": "1959",
-                            "id": "",
-                        },
-                    ],
-                )
-            ),
-        )
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: {
-                "fetch_explicit": False,
-                "output_format": "text",
-                "mode": "auto",
-                "auto_add": False,
-                "storefront": "us",
-            },
-        )
-        result = server._playlist_tracks("Jazz Mix")
-        assert "So What" in result
-        assert "Miles Davis" in result
-
-    def test_applescript_failure(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "Jazz Mix"}]))
-        monkeypatch.setattr(
-            server.asc,
-            "get_playlist_tracks_page",
-            _as_page(lambda name: (False, "Music.app error")),
-        )
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: {
-                "fetch_explicit": False,
-                "output_format": "text",
-                "mode": "auto",
-                "auto_add": False,
-                "storefront": "us",
-            },
-        )
-        result = server._playlist_tracks("Jazz Mix")
-        assert "Error" in result
-
-    def test_applescript_not_available_for_name(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
+    def test_name_not_found_error(self, monkeypatch):
         monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
         monkeypatch.setattr(
             server,
@@ -1369,7 +1133,8 @@ class TestPlaylistTracks:
         )
         result = server._playlist_tracks("Jazz Mix")
         assert "Error" in result
-        assert "macOS" in result
+        assert "not found" in result
+        assert "p.XXX" in result
 
     @responses_lib.activate
     def test_api_path_with_id(
@@ -1420,33 +1185,13 @@ class TestPlaylistSearch:
         result = server._playlist_search("jude", "")
         assert "Error" in result
 
-    def test_applescript_search_success(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "Jazz Mix"}]))
-        monkeypatch.setattr(
-            server.asc,
-            "search_playlist",
-            lambda name, q: (True, [{"name": "So What", "artist": "Miles Davis", "id": ""}]),
-        )
-        result = server._playlist_search("Miles Davis", "Jazz Mix")
-        assert "So What" in result
-        assert "Miles Davis" in result
-
-    def test_applescript_search_failure(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "Jazz Mix"}]))
-        monkeypatch.setattr(server.asc, "search_playlist", lambda name, q: (False, "error"))
-        result = server._playlist_search("Miles Davis", "Jazz Mix")
-        assert "Error" in result
-
     def test_no_matches(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "Jazz Mix"}]))
-        monkeypatch.setattr(server.asc, "search_playlist", lambda name, q: (True, []))
-        result = server._playlist_search("xyz99999", "Jazz Mix")
+        monkeypatch.setattr(
+            server,
+            "_get_playlist_track_names",
+            lambda pid: (True, [{"name": "So What", "artist": "Miles Davis", "id": "i.1"}]),
+        )
+        result = server._playlist_search("xyz99999", "p.pl")
         assert "No matches" in result
 
     @responses_lib.activate
@@ -1474,12 +1219,11 @@ class TestPlaylistSearch:
         result = server._playlist_search("Jude", "p.testpl")
         assert "Hey Jude" in result
 
-    def test_applescript_not_available_for_name_search(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
+    def test_name_not_found_error(self, monkeypatch):
         monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
         result = server._playlist_search("hey", "Jazz Mix")
         assert "Error" in result
-        assert "macOS" in result
+        assert "not found" in result
 
     @responses_lib.activate
     def test_api_search_multiple_matches(
@@ -1515,130 +1259,22 @@ class TestPlaylistSearch:
 # ---------------------------------------------------------------------------
 
 
-def _as_copy_source(monkeypatch, total, copied=None, copy_error=None, refused=()):
-    """Stub the macOS copy path: a source of `total` tracks, `copied` of which land."""
-    calls = []
-    monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-    monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-    monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "Source PL"}]))
-    monkeypatch.setattr(
-        server.asc, "get_playlist_tracks_page", lambda name, offset, limit: (True, [], total)
-    )
-    monkeypatch.setattr(
-        server.asc,
-        "get_playlist_persistent_id",
-        lambda name: calls.append(("id", name)) or (True, "SRCPERSIST"),
-    )
-
-    def create(name, desc=""):
-        calls.append(("create", name))
-        return True, "NEWPERSIST"
-
-    monkeypatch.setattr(server.asc, "create_playlist", create)
-
-    def copy(source, dest_id):
-        calls.append((source, dest_id))
-        if copy_error:
-            return False, copy_error
-        return True, (total if copied is None else copied, total, list(refused))
-
-    monkeypatch.setattr(server.asc, "copy_playlist_tracks", copy)
-    monkeypatch.setattr(
-        server.asc,
-        "add_track_to_playlist",
-        lambda *a, **k: pytest.fail("copy must not look tracks up by name"),
-    )
-    return calls
-
-
 class TestPlaylistCopy:
     def test_no_new_name_error(self, monkeypatch):
         result = server._playlist_copy("Source", "")
         assert "Error" in result
         assert "new_name" in result.lower()
 
-    def test_applescript_success(self, monkeypatch):
-        calls = _as_copy_source(monkeypatch, 2)
-        result = server._playlist_copy("Source PL", "Copy PL")
-        assert "Copy PL" in result
-        assert "NEWPERSIST" in result
-        assert "with 2 tracks" in result
-        assert calls == [("id", "Source PL"), ("create", "Copy PL"), ("SRCPERSIST", "NEWPERSIST")]
-
-    def test_applescript_empty_source(self, monkeypatch):
-        calls = _as_copy_source(monkeypatch, 0)
-        result = server._playlist_copy("Source PL", "Copy PL")
-        assert "Error" in result
-        assert "empty" in result.lower()
-        assert [c for c in calls if c[0] == "create"] == []
-
-    def test_applescript_source_read_fails(self, monkeypatch):
-        _as_copy_source(monkeypatch, 2)
-        monkeypatch.setattr(
-            server.asc, "get_playlist_tracks_page", lambda *a: (False, "Music.app error", 0)
-        )
-        result = server._playlist_copy("Source PL", "Copy PL")
-        assert "Error" in result
-
-    def test_applescript_create_fails(self, monkeypatch):
-        calls = _as_copy_source(monkeypatch, 1)
-        monkeypatch.setattr(server.asc, "create_playlist", lambda name, desc="": (False, "error"))
-        result = server._playlist_copy("Source PL", "Copy PL")
-        assert "Error" in result
-        assert calls == [("id", "Source PL")]
-
-    def test_applescript_copy_to_the_same_name_copies_the_original(self, monkeypatch):
-        """The source is pinned by persistent ID before the copy exists, so copying
-        "Mix" to a new "Mix" can't pick the empty new one (Sourcery, PR #81)."""
-        calls = _as_copy_source(monkeypatch, 3)
-        server._playlist_copy("Source PL", "Source PL")
-        assert calls[0] == ("id", "Source PL")
-        assert calls[-1] == ("SRCPERSIST", "NEWPERSIST")
-
-    def test_applescript_some_tracks_fail(self, monkeypatch):
-        _as_copy_source(monkeypatch, 972, copied=971, refused=["Blue"])
-        result = server._playlist_copy("Source PL", "Copy PL")
-        assert "NEWPERSIST" in result
-        assert "with 971/972 tracks" in result
-        assert "Music.app couldn't copy 1: Blue" in result
-
-    def test_applescript_unnamed_drops_are_not_passed_off_as_the_whole_list(self, monkeypatch):
-        """Live, a 12,466-track copy lost 43 tracks and Music.app raised an error
-        for one of them; the rest it dropped silently."""
-        _as_copy_source(monkeypatch, 12466, copied=12423, refused=["Blue"])
-        result = server._playlist_copy("Source PL", "Copy PL")
-        assert "Music.app couldn't copy 43, including Blue" in result
-
-        _as_copy_source(monkeypatch, 10, copied=8)
-        result = server._playlist_copy("Source PL", "Copy PL")
-        assert result.endswith("Music.app couldn't copy 2")
-
-    def test_applescript_copy_fails_names_the_new_playlist(self, monkeypatch):
-        """The playlist exists by the time copying fails; say so, with its ID, and
-        log it so it can be found and undone."""
-        logged = []
-        monkeypatch.setattr(
-            server.audit_log, "log_action", lambda a, d, **k: logged.append((a, d, k))
-        )
-        _as_copy_source(monkeypatch, 5, copy_error="AppleScript timed out after 30 seconds")
-        result = server._playlist_copy("Source PL", "Copy PL")
-        assert result.startswith("Error: created 'Copy PL' (ID: NEWPERSIST)")
-        action, details, extra = logged[0]
-        assert action == "copy_playlist" and details["error"]
-        assert extra["undo_info"]["playlist_id"] == "NEWPERSIST"
-
-    def test_no_applescript_for_name_error(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
+    def test_name_not_found_error(self, monkeypatch):
         monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
         result = server._playlist_copy("Source PL", "Copy PL")
         assert "Error" in result
-        assert "macOS" in result
+        assert "not found" in result
 
     @responses_lib.activate
     def test_api_mode_by_id_success(
         self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
     ):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
         _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
         responses_lib.add(
             responses_lib.GET,
@@ -1670,7 +1306,6 @@ class TestPlaylistCopy:
     def test_api_mode_404_pagination_ends(
         self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
     ):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
         _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
         responses_lib.add(
             responses_lib.GET,
@@ -1703,58 +1338,8 @@ class TestPlaylistAdd:
         result = server._playlist_add("My Playlist", "")
         assert "Error" in result
 
-    def test_applescript_mode_name_success(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "My Playlist"}]))
-        monkeypatch.setattr(
-            server.asc, "track_exists_in_playlist", lambda pl, name, artist: (True, False)
-        )
-        monkeypatch.setattr(
-            server,
-            "_smart_as_add_track_to_playlist",
-            lambda pl, name, artist, album: (True, "ok", None),
-        )
-        monkeypatch.setattr(server, "_verify_track_in_playlist", lambda pl, name, artist: True)
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: {
-                "auto_add": False,
-                "fetch_explicit": False,
-                "mode": "auto",
-                "storefront": "us",
-                "output_format": "text",
-            },
-        )
-        result = server._playlist_add("My Playlist", "Hey Jude")
-        assert "Added" in result
-
-    def test_applescript_duplicate_skipped(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "My Playlist"}]))
-        monkeypatch.setattr(
-            server.asc, "track_exists_in_playlist", lambda pl, name, artist: (True, True)
-        )
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: {
-                "auto_add": False,
-                "fetch_explicit": False,
-                "mode": "auto",
-                "storefront": "us",
-                "output_format": "text",
-            },
-        )
-        result = server._playlist_add("My Playlist", "Hey Jude")
-        # Should skip due to duplicate — "No tracks added" or skipped step
-        assert "Skipped" in result or "No tracks" in result or "skip" in result.lower()
-
     def test_explicit_id_uses_api_mode(self, monkeypatch):
-        """Explicit p.xxx playlist bypasses AppleScript."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
+        """Explicit p.xxx playlist bypasses name resolution."""
         monkeypatch.setattr(
             server,
             "get_user_preferences",
@@ -1771,8 +1356,7 @@ class TestPlaylistAdd:
         result = server._playlist_add("p.abc123", "Hey Jude")
         assert isinstance(result, str)
 
-    def test_no_applescript_name_error(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
+    def test_name_not_found_error(self, monkeypatch):
         monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
         monkeypatch.setattr(
             server,
@@ -1787,20 +1371,16 @@ class TestPlaylistAdd:
         )
         result = server._playlist_add("My Playlist", "Hey Jude")
         assert "Error" in result
-        assert "macOS" in result or "playlist ID" in result
+        assert "not found" in result
+        assert "p.XXX" in result
 
-    def test_track_not_found_no_autosearch_hint(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "My Playlist"}]))
-        monkeypatch.setattr(
-            server.asc, "track_exists_in_playlist", lambda pl, name, artist: (True, False)
-        )
-        monkeypatch.setattr(
-            server,
-            "_smart_as_add_track_to_playlist",
-            lambda pl, name, artist, album: (False, "Track not found", None),
-        )
+    def test_track_not_in_library_hints_auto_add(
+        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
+    ):
+        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
+        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda n: ("p.1", None))
+        monkeypatch.setattr(server.amp_api, "get_tracks", lambda pid: [])
+        monkeypatch.setattr(server.amp_api, "search_library_songs", lambda q, n=25: [])
         monkeypatch.setattr(
             server,
             "get_user_preferences",
@@ -1813,99 +1393,7 @@ class TestPlaylistAdd:
             },
         )
         result = server._playlist_add("My Playlist", "UnknownSong", verify=False)
-        assert "not in your library" in result or "auto_add" in result
-
-    def test_applescript_add_split_match(self, monkeypatch):
-        """When _smart_as_add_track_to_playlist returns split_match, name is formatted."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "My Playlist"}]))
-        monkeypatch.setattr(
-            server.asc, "track_exists_in_playlist", lambda pl, name, artist: (True, False)
-        )
-        monkeypatch.setattr(
-            server,
-            "_smart_as_add_track_to_playlist",
-            lambda pl, name, artist, album: (True, "ok", ("Hey Jude", "Beatles")),
-        )
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: {
-                "auto_add": False,
-                "fetch_explicit": False,
-                "mode": "auto",
-                "storefront": "us",
-                "output_format": "text",
-            },
-        )
-        result = server._playlist_add("My Playlist", "HeyJude")
-        assert "Added" in result
-        assert "Hey Jude" in result
-
-    def test_mixed_added_and_errors(self, monkeypatch):
-        """When some tracks added and some fail."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "My Playlist"}]))
-        monkeypatch.setattr(
-            server.asc, "track_exists_in_playlist", lambda pl, name, artist: (True, False)
-        )
-        call_count = [0]
-
-        def mock_smart_add(pl, name, artist, album):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                return (True, "ok", None)
-            return (False, "Some error", None)
-
-        monkeypatch.setattr(server, "_smart_as_add_track_to_playlist", mock_smart_add)
-        monkeypatch.setattr(server, "_verify_track_in_playlist", lambda pl, name, artist: True)
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: {
-                "auto_add": False,
-                "fetch_explicit": False,
-                "mode": "auto",
-                "storefront": "us",
-                "output_format": "text",
-            },
-        )
-        result = server._playlist_add("My Playlist", "Hey Jude, Let It Be", verify=True)
-        assert "Added" in result
-        assert "Errors" in result or "failed" in result.lower()
-
-    def test_verify_fails_then_retry_fails(self, monkeypatch):
-        """Verify-then-retry path when track doesn't persist after add."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "My PL"}]))
-        monkeypatch.setattr(
-            server.asc, "track_exists_in_playlist", lambda pl, name, artist: (True, False)
-        )
-        monkeypatch.setattr(
-            server,
-            "_smart_as_add_track_to_playlist",
-            lambda pl, name, artist, album: (True, "ok", None),
-        )
-        # First verify call returns False (track not found), second also False
-        monkeypatch.setattr(server, "_verify_track_in_playlist", lambda pl, name, artist: False)
-        monkeypatch.setattr(server, "_VERIFY_DELAY_S", 0)
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: {
-                "auto_add": False,
-                "fetch_explicit": False,
-                "mode": "auto",
-                "storefront": "us",
-                "output_format": "text",
-            },
-        )
-        result = server._playlist_add("My PL", "Hey Jude", verify=True)
-        # Should fail with "did not persist" message
-        assert "persist" in result.lower() or "Error" in result
+        assert "Could not find 'UnknownSong' in library or catalog" in result
 
 
 # ---------------------------------------------------------------------------
@@ -1915,55 +1403,36 @@ class TestPlaylistAdd:
 
 class TestPlaylistDispatcher:
     # --- list ---
-    def test_action_list(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(
-            server.asc,
-            "get_playlists",
-            lambda: (True, [{"id": "A1", "name": "PL1", "track_count": 3, "smart": False}]),
-        )
-        result = server.playlist(action="list")
+    def test_action_list(self, mock_config_dir, mock_developer_token, mock_user_token):
+        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
+        with responses_lib.RequestsMock() as rsps:
+            rsps.add(
+                responses_lib.GET,
+                "https://api.music.apple.com/v1/me/library/playlists",
+                json={"data": [{"id": "p.1", "attributes": {"name": "PL1"}}]},
+                status=200,
+            )
+            result = server.playlist(action="list")
         assert "PL1" in result
-
     # --- tracks ---
-    def test_action_tracks(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "Jazz Mix"}]))
-        monkeypatch.setattr(
-            server.asc,
-            "get_playlist_tracks_page",
-            _as_page(
-                lambda name: (
-                    True,
-                    [
+    def test_action_tracks(self, mock_config_dir, mock_developer_token, mock_user_token):
+        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
+        with responses_lib.RequestsMock() as rsps:
+            rsps.add(
+                responses_lib.GET,
+                "https://api.music.apple.com/v1/me/library/playlists/p.pl/tracks",
+                json={
+                    "data": [
                         {
-                            "name": "So What",
-                            "artist": "Miles Davis",
-                            "album": "",
-                            "duration": "9:22",
-                            "genre": "Jazz",
-                            "year": "1959",
-                            "id": "",
-                        },
-                    ],
-                )
-            ),
-        )
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: {
-                "fetch_explicit": False,
-                "output_format": "text",
-                "mode": "auto",
-                "auto_add": False,
-                "storefront": "us",
-            },
-        )
-        result = server.playlist(action="tracks", playlist="Jazz Mix")
+                            "id": "i.1",
+                            "attributes": {"name": "So What", "artistName": "Miles Davis"},
+                        }
+                    ]
+                },
+                status=200,
+            )
+            result = server.playlist(action="tracks", playlist="p.pl")
         assert "So What" in result
-
     # --- search ---
     def test_action_search_no_query(self, monkeypatch):
         result = server.playlist(action="search")
@@ -1971,31 +1440,17 @@ class TestPlaylistDispatcher:
         assert "query" in result.lower()
 
     def test_action_search_with_query(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "Jazz Mix"}]))
         monkeypatch.setattr(
-            server.asc,
-            "search_playlist",
-            lambda name, q: (True, [{"name": "So What", "artist": "Miles Davis", "id": ""}]),
+            server,
+            "_get_playlist_track_names",
+            lambda pid: (True, [{"name": "So What", "artist": "Miles Davis", "id": "i.1"}]),
         )
-        result = server.playlist(action="search", playlist="Jazz Mix", query="Miles")
+        result = server.playlist(action="search", playlist="p.pl", query="Miles")
         assert "So What" in result
-
     # --- create ---
     def test_action_create_no_name_no_folder_error(self, monkeypatch):
         result = server.playlist(action="create")
         assert "Error" in result
-
-    def test_action_create_name_native(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(
-            server.asc, "create_playlist", lambda name, desc="": (True, "PERSIST01")
-        )
-        result = server.playlist(action="create", name="New PL")
-        assert "Created" in result
-        assert "New PL" in result
 
     def test_action_create_name_api_engine(self, monkeypatch):
         monkeypatch.setattr(server, "_write_rail", lambda *a, **k: "web")
@@ -2007,37 +1462,25 @@ class TestPlaylistDispatcher:
         assert "p.new1" in result
 
     def test_action_create_folder_only_api(self, monkeypatch):
-        monkeypatch.setattr(server, "_engine", lambda: "api")
-        monkeypatch.setattr(
-            server.amp_api, "create_folder", lambda name, parent_id=None: (True, "f.fld1")
-        )
-        # On macOS _playlist_create_folder branches on APPLESCRIPT_AVAILABLE, so it
-        # calls asc.create_folder regardless of engine; stub it so this stays
-        # offline instead of creating a real "My Folder" in the library.
-        monkeypatch.setattr(server.asc, "create_folder", lambda name: (True, "f.fld1"))
+        monkeypatch.setattr(server.amp_api, "create_folder", lambda name, **k: (True, "f.fld1"))
         result = server.playlist(action="create", folder="My Folder")
         assert "Created" in result
         assert "My Folder" in result
-
-    def test_action_create_folder_only_native(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(server.asc, "create_folder", lambda name: (True, "f.fld1"))
-        result = server.playlist(action="create", folder="My Folder")
-        assert "Created" in result
-
     def test_action_create_folder_and_name(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(server.asc, "create_folder", lambda name: (True, "f.fld1"))
+        monkeypatch.setattr(server.amp_api, "create_folder", lambda name, **k: (True, "f.fld1"))
         monkeypatch.setattr(
-            server.asc, "create_playlist", lambda name, desc="": (True, "PERSIST01")
+            server.amp_api, "create_playlist", lambda name, desc="": (True, "p.new")
         )
-        monkeypatch.setattr(server.asc, "move_to_folder", lambda pl, folder: (True, "Moved"))
+        monkeypatch.setattr(
+            server.amp_api, "resolve_playlist_id", lambda name, **k: "p.new"
+        )
+        monkeypatch.setattr(server.amp_api, "resolve_folder_id", lambda name: "f.fld1")
+        monkeypatch.setattr(
+            server.amp_api, "move_playlist_to_folder", lambda pid, fid: (True, "")
+        )
         result = server.playlist(action="create", name="New PL", folder="Summer")
         assert "Created" in result
         assert "New PL" in result
-
     # --- add ---
     def test_action_add_api_engine(self, monkeypatch):
         # Off macOS → the add takes the web rail (amp-api).
@@ -2097,40 +1540,33 @@ class TestPlaylistDispatcher:
         result = server.playlist(action="add", playlist="p.abc123", album="Abbey Road")
         assert isinstance(result, str)
 
-    def test_action_add_native(self, monkeypatch):
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "My Playlist"}]))
-        monkeypatch.setattr(
-            server.asc, "track_exists_in_playlist", lambda pl, name, artist: (True, False)
-        )
-        monkeypatch.setattr(
-            server,
-            "_smart_as_add_track_to_playlist",
-            lambda pl, name, artist, album: (True, "ok", None),
-        )
-        monkeypatch.setattr(server, "_verify_track_in_playlist", lambda pl, name, artist: True)
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: {
-                "auto_add": False,
-                "fetch_explicit": False,
-                "mode": "native",
-                "storefront": "us",
-                "output_format": "text",
-            },
-        )
-        result = server.playlist(action="add", playlist="My Playlist", track="Hey Jude")
-        assert "Added" in result
-
     # --- copy ---
-    def test_action_copy(self, monkeypatch):
-        _as_copy_source(monkeypatch, 1)
-        result = server.playlist(action="copy", source="Source PL", new_name="Copy PL")
+    def test_action_copy(self, mock_config_dir, mock_developer_token, mock_user_token):
+        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
+        with responses_lib.RequestsMock() as rsps:
+            rsps.add(
+                responses_lib.GET,
+                "https://api.music.apple.com/v1/me/library/playlists/p.src/tracks",
+                json={
+                    "data": [
+                        {"id": "i.t1", "attributes": {"name": "Song A", "artistName": "Artist"}}
+                    ]
+                },
+                status=200,
+            )
+            rsps.add(
+                responses_lib.POST,
+                "https://api.music.apple.com/v1/me/library/playlists",
+                json={"data": [{"id": "p.newcopy"}]},
+                status=200,
+            )
+            rsps.add(
+                responses_lib.POST,
+                "https://api.music.apple.com/v1/me/library/playlists/p.newcopy/tracks",
+                status=204,
+            )
+            result = server.playlist(action="copy", source="p.src", new_name="Copy PL")
         assert "Copy PL" in result
-
     # --- remove ---
     def test_action_remove_api_engine(self, monkeypatch):
         monkeypatch.setattr(server, "_write_rail", lambda *a, **k: "web")
@@ -2184,24 +1620,6 @@ class TestPlaylistDispatcher:
         result = server.playlist(action="delete", folder="Old Folder")
         assert "Deleted" in result and "macOS" not in result
 
-    def test_action_delete_folder_native_success(self, monkeypatch):
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server.asc, "delete_folder", lambda name: (True, "Deleted"))
-        result = server.playlist(action="delete", folder="Old Folder")
-        assert "Deleted" in result
-
-    def test_action_delete_native_success(self, monkeypatch):
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        # _playlist_delete reads tracks first (for the undo log); stub it offline.
-        monkeypatch.setattr(
-            server.asc, "get_playlist_tracks_page", lambda name, offset=0, limit=500: (True, [], 0)
-        )
-        monkeypatch.setattr(server.asc, "delete_playlist", lambda name: (True, "Deleted"))
-        result = server.playlist(action="delete", name="Old PL")
-        assert "Deleted" in result
-
     def test_action_delete_native_macos_only_error(self, monkeypatch):
         """Off macOS, delete routes to the web rail."""
         monkeypatch.setattr(server, "_write_rail", lambda *a, **k: "web")
@@ -2228,30 +1646,9 @@ class TestPlaylistDispatcher:
         assert "Renamed" in result
 
     def test_action_rename_folder_macos_only(self, monkeypatch):
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
         result = server.playlist(action="rename", folder="Old Folder", new_name="New Folder")
         assert "Error" in result
-        assert "macOS" in result
-
-    def test_action_rename_folder_native_success(self, monkeypatch):
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(
-            server.asc, "rename_playlist", lambda old, new: (True, f"Renamed to {new}")
-        )
-        result = server.playlist(action="rename", folder="Old Folder", new_name="New Folder")
-        assert "Renamed" in result or "New Folder" in result
-
-    def test_action_rename_native_success(self, monkeypatch):
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(
-            server.asc, "rename_playlist", lambda old, new: (True, f"Renamed {old} to {new}")
-        )
-        result = server.playlist(action="rename", playlist="Old PL", new_name="New PL")
-        assert "Renamed" in result
-
+        assert "isn't available over the Apple Music API" in result
     def test_action_rename_native_macos_only_error(self, monkeypatch):
         """Off macOS, rename routes to the web rail."""
         monkeypatch.setattr(server, "_write_rail", lambda *a, **k: "web")
@@ -2265,24 +1662,10 @@ class TestPlaylistDispatcher:
         assert "Error" in result
 
     def test_action_create_folder_api_engine(self, monkeypatch):
-        monkeypatch.setattr(server, "_engine", lambda: "api")
-        monkeypatch.setattr(
-            server.amp_api, "create_folder", lambda name, parent_id=None: (True, "f.fld1")
-        )
-        # See test_action_create_folder_only_api: on macOS the folder create path
-        # runs asc.create_folder, so stub it to keep the test offline.
-        monkeypatch.setattr(server.asc, "create_folder", lambda name: (True, "f.fld1"))
+        monkeypatch.setattr(server.amp_api, "create_folder", lambda name, **k: (True, "f.fld1"))
         result = server.playlist(action="create_folder", name="Summer Folder")
         assert "Created" in result
         assert "Summer Folder" in result
-
-    def test_action_create_folder_native_success(self, monkeypatch):
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server.asc, "create_folder", lambda name: (True, "f.fld1"))
-        result = server.playlist(action="create_folder", name="Summer Folder")
-        assert "Created" in result
-
     def test_action_create_folder_native_macos_only_error(self, monkeypatch):
         """Off macOS, create_folder routes to the web rail."""
         monkeypatch.setattr(server, "_write_rail", lambda *a, **k: "web")
@@ -2307,26 +1690,6 @@ class TestPlaylistDispatcher:
         result = server.playlist(action="move", playlist="My PL", name="Summer")
         assert "Moved" in result
 
-    def test_action_move_native_to_folder(self, monkeypatch):
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server.asc, "move_to_folder", lambda pl, folder: (True, "Moved"))
-        result = server.playlist(action="move", playlist="My PL", name="Summer")
-        assert "Moved" in result
-
-    def test_action_move_native_no_folder_needs_confirm(self, monkeypatch):
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        result = server.playlist(action="move", playlist="My PL")
-        assert "cannot move" in result.lower() or "allow_duplicates" in result
-
-    def test_action_move_native_no_folder_with_confirm(self, monkeypatch):
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server.asc, "move_to_root", lambda name: (True, "Moved to root"))
-        result = server.playlist(action="move", playlist="My PL", allow_duplicates=True)
-        assert "root" in result.lower() or "Moved" in result
-
     def test_action_move_native_macos_only_error(self, monkeypatch):
         """Off macOS, move routes to the web rail."""
         monkeypatch.setattr(server, "_write_rail", lambda *a, **k: "web")
@@ -2339,17 +1702,14 @@ class TestPlaylistDispatcher:
         assert "Moved" in result and "macOS" not in result
 
     def test_action_path_with_target(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server.asc, "get_playlist_path", lambda name: (True, "Summer/Chill"))
         result = server.playlist(action="path", playlist="My PL")
-        assert "Summer/Chill" in result
-
+        assert "aren't available over the Apple Music API" in result
     def test_action_path_without_target_shows_tree(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server.asc, "get_folder_tree", lambda: (True, "Summer\n  Chill"))
+        monkeypatch.setattr(
+            server.amp_api, "list_folders", lambda: [{"id": "f.1", "name": "Summer"}]
+        )
         result = server.playlist(action="path")
         assert "Summer" in result
-
     # --- unknown action ---
     def test_unknown_action(self, monkeypatch):
         result = server.playlist(action="frobnicate")
@@ -2407,19 +1767,14 @@ class TestPlaylistDispatcher:
     # --- create_folder backward compat with alias ---
     def test_action_create_folder_alias_via_create(self, monkeypatch):
         """create action with folder= and no name= creates a folder."""
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server.asc, "create_folder", lambda name: (True, "f.fld"))
+        monkeypatch.setattr(server.amp_api, "create_folder", lambda name, **k: (True, "f.fld"))
         result = server.playlist(action="create", folder="My Folder")
         assert "Created" in result
         assert "My Folder" in result
-
     # --- path with folder param ---
     def test_action_path_with_folder_param(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server.asc, "get_playlist_path", lambda name: (True, "Root/Sub"))
         result = server.playlist(action="path", folder="Sub")
-        assert "Root/Sub" in result
+        assert "aren't available over the Apple Music API" in result
 
 
 # ---------------------------------------------------------------------------
@@ -2449,82 +1804,29 @@ class TestPlaylistAddApiEdgeCases:
 class TestPlaylistListOutputFormats:
     """Cover format_output calls for different formats."""
 
+    @staticmethod
+    def _stub_playlists(monkeypatch):
+        class _R:
+            status_code = 200
+
+            def json(self):
+                return {"data": [{"id": "p.1", "attributes": {"name": "PL1"}}]}
+
+            def raise_for_status(self):
+                pass
+
+        monkeypatch.setattr(server, "get_headers", lambda: {})
+        monkeypatch.setattr(server.requests, "get", lambda *a, **k: _R())
+
     def test_csv_format(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(
-            server.asc,
-            "get_playlists",
-            lambda: (
-                True,
-                [
-                    {"id": "A1", "name": "PL1", "track_count": 3, "smart": False},
-                ],
-            ),
-        )
+        self._stub_playlists(monkeypatch)
         result = server._playlist_list(format="csv")
         assert "PL1" in result
 
     def test_none_format(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(
-            server.asc,
-            "get_playlists",
-            lambda: (
-                True,
-                [
-                    {"id": "A1", "name": "PL1", "track_count": 3, "smart": False},
-                ],
-            ),
-        )
+        self._stub_playlists(monkeypatch)
         result = server._playlist_list(format="none")
         assert isinstance(result, str)
-
-
-class TestPlaylistAddIdsWithNoToken:
-    """Test the IDs-require-token guard in _playlist_add."""
-
-    def test_ids_without_token_error(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "My PL"}]))
-        monkeypatch.setattr(server, "_has_developer_token", lambda: False)
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: {
-                "auto_add": False,
-                "fetch_explicit": False,
-                "mode": "auto",
-                "storefront": "us",
-                "output_format": "text",
-            },
-        )
-        # Catalog ID input
-        result = server._playlist_add("My PL", "1234567890")
-        assert "Error" in result or "token" in result.lower() or "login --dev" in result
-
-    def test_all_tracks_duplicate_returns_no_tracks_added(self, monkeypatch):
-        """When all tracks are skipped as duplicates."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "My PL"}]))
-        monkeypatch.setattr(
-            server.asc, "track_exists_in_playlist", lambda pl, name, artist: (True, True)
-        )
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: {
-                "auto_add": False,
-                "fetch_explicit": False,
-                "mode": "auto",
-                "storefront": "us",
-                "output_format": "text",
-            },
-        )
-        result = server._playlist_add("My PL", "Hey Jude, Let It Be")
-        # No tracks added, no errors
-        assert "No tracks" in result or "steps" in result.lower() or len(result) > 0
 
 
 class TestPlaylistCopyLargeBatch:
@@ -2567,50 +1869,6 @@ class TestPlaylistCopyLargeBatch:
         result = server._playlist_copy("p.src", "Copy PL")
         assert "30" in result
         assert "Copy PL" in result
-
-
-class TestPlaylistRemoveNativeDispatch:
-    """Cover native _playlist_remove path in dispatcher."""
-
-    def test_remove_native_success(self, monkeypatch):
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        # _playlist_remove is macOS-only (defined inside APPLESCRIPT_AVAILABLE block)
-        # Patch it directly
-        monkeypatch.setattr(
-            server,
-            "_playlist_remove",
-            lambda pl, track, artist="": f"Removed '{track}' from '{pl}'",
-        )
-        result = server.playlist(action="remove", playlist="My PL", track="Hey Jude")
-        assert "Removed" in result
-        assert "Hey Jude" in result
-
-
-class TestPlaylistDeleteNativeDirect:
-    """Cover _playlist_delete path via dispatcher."""
-
-    def test_delete_native_calls_playlist_delete(self, monkeypatch):
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_playlist_delete", lambda name: f"Deleted playlist '{name}'")
-        result = server.playlist(action="delete", name="Old PL")
-        assert "Deleted" in result
-        assert "Old PL" in result
-
-
-class TestResolvePlaylistApplescriptEmpty:
-    """Cover branch where AppleScript get_playlists returns no match."""
-
-    def test_no_match_in_applescript_falls_back_to_raw(self, monkeypatch):
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(
-            server.asc, "get_playlists", lambda: (True, [{"name": "Something Else"}])
-        )
-        resolved = server._resolve_playlist("NonExistentPlaylist")
-        # Falls back to raw (fuzzy match returns None for very different names)
-        assert resolved.error is None
 
 
 class TestPlaylistAddApiErrorHandling:
@@ -2658,18 +1916,30 @@ class TestPlaylistListPaging:
 
     @staticmethod
     def _stub_playlists(monkeypatch, n):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(
-            server.asc,
-            "get_playlists",
-            lambda: (
-                True,
-                [
-                    {"id": f"P{i}", "name": f"Playlist {i}", "track_count": 1, "smart": False}
-                    for i in range(n)
-                ],
-            ),
-        )
+        # The fake MUST honor offset/limit: a full page on every call is what the
+        # paginating reader would want to be told it has more, forever.
+        rows = [{"id": f"p.{i}", "attributes": {"name": f"Playlist {i}"}} for i in range(n)]
+
+        class _R:
+            status_code = 200
+
+            def __init__(self, page):
+                self._page = page
+
+            def json(self):
+                return {"data": self._page}
+
+            def raise_for_status(self):
+                pass
+
+        def fake_get(_url, headers=None, params=None, timeout=None, **kwargs):
+            params = params or {}
+            offset = int(params.get("offset", 0))
+            limit = int(params.get("limit", 100))
+            return _R(rows[offset : offset + limit])
+
+        monkeypatch.setattr(server, "get_headers", lambda: {})
+        monkeypatch.setattr(server.requests, "get", fake_get)
 
     def test_all_playlists_shown_by_default(self, monkeypatch):
         self._stub_playlists(monkeypatch, 250)
@@ -2892,20 +2162,6 @@ class TestPlaylistCreateApiExceptions:
 class TestPlaylistAddTrackInputError:
     def test_invalid_json_track_returns_error(self, monkeypatch):
         """Line 3247: r.error from malformed JSON track input."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "My PL"}]))
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: {
-                "auto_add": False,
-                "fetch_explicit": False,
-                "mode": "auto",
-                "storefront": "us",
-                "output_format": "text",
-            },
-        )
         # '[bad' starts with '[', JSON decode fails -> r.error="Invalid JSON: ..."
         result = server._playlist_add("My PL", "[bad json")
         assert "Error" in result
@@ -2914,88 +2170,6 @@ class TestPlaylistAddTrackInputError:
 # ---------------------------------------------------------------------------
 # _playlist_add: result building branches (lines 3617, 3629)
 # ---------------------------------------------------------------------------
-
-
-class TestPlaylistAddResultBuilding:
-    def test_added_and_errors_with_steps(self, monkeypatch):
-        """Line 3617: added+errors path with steps included."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "My PL"}]))
-        monkeypatch.setattr(server.asc, "track_exists_in_playlist", lambda pl, n, a: (True, False))
-        call_count = [0]
-
-        def mock_smart_add(pl, name, artist, album):
-            call_count[0] += 1
-            # First succeeds, second fails
-            if call_count[0] == 1:
-                return (True, "ok", None)
-            return (False, "Some error", None)
-
-        monkeypatch.setattr(server, "_smart_as_add_track_to_playlist", mock_smart_add)
-        monkeypatch.setattr(server, "_verify_track_in_playlist", lambda pl, n, a: True)
-        # Inject a step by having the second track be "Track not found" type (not auto_add)
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: {
-                "auto_add": False,
-                "fetch_explicit": False,
-                "mode": "auto",
-                "storefront": "us",
-                "output_format": "text",
-            },
-        )
-        result = server._playlist_add("My PL", "Song A, Song B", verify=True)
-        assert "Added" in result
-
-    def test_no_tracks_added_no_steps_returns_message(self, monkeypatch):
-        """Line 3629: 'No tracks added' when nothing happened (no steps)."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "My PL"}]))
-        monkeypatch.setattr(server.asc, "track_exists_in_playlist", lambda pl, n, a: (True, True))
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: {
-                "auto_add": False,
-                "fetch_explicit": False,
-                "mode": "auto",
-                "storefront": "us",
-                "output_format": "text",
-            },
-        )
-        # All tracks are duplicates -> no added, no errors, no steps
-        result = server._playlist_add("My PL", "Song A")
-        # Should be "No tracks added" since the duplicate step is a skipped step (in steps list)
-        assert isinstance(result, str)
-
-    def test_errors_only_no_autosearch_shows_tip(self, monkeypatch):
-        """Line 3619-3625: only errors, auto_add=False -> shows tip."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "My PL"}]))
-        monkeypatch.setattr(server.asc, "track_exists_in_playlist", lambda pl, n, a: (True, False))
-        monkeypatch.setattr(
-            server,
-            "_smart_as_add_track_to_playlist",
-            lambda pl, n, a, alb: (False, "Some random error", None),
-        )
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: {
-                "auto_add": False,
-                "fetch_explicit": False,
-                "mode": "auto",
-                "storefront": "us",
-                "output_format": "text",
-            },
-        )
-        result = server._playlist_add("My PL", "Song A", auto_add=False)
-        assert "Errors" in result
-        assert "auto_add" in result or "Tip" in result
 
 
 # ---------------------------------------------------------------------------
@@ -3211,15 +2385,6 @@ class TestPlaylistAddApiMode:
 
 
 class TestPlaylistCopyEdgeCases:
-    def test_applescript_failures_audited(self, monkeypatch):
-        logged = []
-        monkeypatch.setattr(server.audit_log, "log_action", lambda a, d, **k: logged.append(d))
-        _as_copy_source(monkeypatch, 7, copied=0, refused=[f"Track {i}" for i in range(7)])
-        result = server._playlist_copy("Src", "Copy")
-        assert "with 0/7 tracks" in result
-        assert "Track 4, ... (+2 more)" in result
-        assert logged[0]["failed_count"] == 7 and logged[0]["track_count"] == 0
-
     @responses_lib.activate
     def test_api_copy_empty_tracks_from_200(
         self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
@@ -3307,306 +2472,6 @@ class TestPlaylistCopyEdgeCases:
 
 # ---------------------------------------------------------------------------
 # _playlist_add: auto_add path (lines 3451-3459)
-# ---------------------------------------------------------------------------
-
-
-class TestPlaylistAddAutoSearch:
-    def test_auto_search_succeeds(self, monkeypatch):
-        """Lines 3451-3458: auto_add=True, track not found locally but catalog found."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "My PL"}]))
-        monkeypatch.setattr(server.asc, "track_exists_in_playlist", lambda pl, n, a: (True, False))
-        monkeypatch.setattr(
-            server,
-            "_smart_as_add_track_to_playlist",
-            lambda pl, n, a, alb: (False, "Track not found in library", None),
-        )
-        monkeypatch.setattr(
-            server,
-            "_unified_auto_search_to_playlist",
-            lambda name, artist, pl: (True, f"{name} - Artist", ["[UI] Added"]),
-        )
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: {
-                "auto_add": True,
-                "fetch_explicit": False,
-                "mode": "auto",
-                "storefront": "us",
-                "output_format": "text",
-            },
-        )
-        result = server._playlist_add("My PL", "New Release", auto_add=True)
-        assert "Added" in result or "New Release" in result
-
-    def test_auto_search_fails(self, monkeypatch):
-        """Lines 3458-3459: auto_add=True but search also fails."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "My PL"}]))
-        monkeypatch.setattr(server.asc, "track_exists_in_playlist", lambda pl, n, a: (True, False))
-        monkeypatch.setattr(
-            server,
-            "_smart_as_add_track_to_playlist",
-            lambda pl, n, a, alb: (False, "Track not found in library", None),
-        )
-        monkeypatch.setattr(
-            server,
-            "_unified_auto_search_to_playlist",
-            lambda name, artist, pl: (False, "not found anywhere", []),
-        )
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: {
-                "auto_add": True,
-                "fetch_explicit": False,
-                "mode": "auto",
-                "storefront": "us",
-                "output_format": "text",
-            },
-        )
-        result = server._playlist_add("My PL", "Ghost Song", auto_add=True)
-        assert "Errors" in result or "not found" in result.lower()
-
-
-# ---------------------------------------------------------------------------
-# _playlist_tracks: fetch_explicit enrichment (lines 2570-2712)
-# ---------------------------------------------------------------------------
-
-
-class TestPlaylistTracksFetchExplicit:
-    @responses_lib.activate
-    def test_fetch_explicit_enriches_tracks(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """Cover the fetch_explicit=True path in _playlist_tracks (lines 2556-2754)."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "Jazz Mix"}]))
-        # Return tracks with no IDs (forces cache miss + API lookup)
-        monkeypatch.setattr(
-            server.asc,
-            "get_playlist_tracks_page",
-            _as_page(
-                lambda name: (
-                    True,
-                    [
-                        {
-                            "name": "So What",
-                            "artist": "Miles Davis",
-                            "album": "Kind of Blue",
-                            "duration": "9:22",
-                            "genre": "Jazz",
-                            "year": "1959",
-                            "id": "",
-                        },
-                    ],
-                )
-            ),
-        )
-        # Mock track cache
-        mock_cache = MagicMock()
-        mock_cache.get_explicit.return_value = None  # cache miss for all
-        monkeypatch.setattr(server, "get_track_cache", lambda: mock_cache)
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        # Library playlists lookup to find the playlist ID
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/me/library/playlists",
-            json={
-                "data": [
-                    {"id": "p.jazzid", "attributes": {"name": "Jazz Mix"}},
-                ]
-            },
-            status=200,
-        )
-        # Tracks with explicit info
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/me/library/playlists/p.jazzid/tracks",
-            json={
-                "data": [
-                    {
-                        "id": "i.t1",
-                        "attributes": {
-                            "name": "So What",
-                            "artistName": "Miles Davis",
-                            "albumName": "Kind of Blue",
-                            "contentRating": "notExplicit",
-                            "isrc": "USRC123",
-                            "playParams": {"catalogId": "1234567890"},
-                        },
-                    },
-                ]
-            },
-            status=200,
-        )
-        result = server._playlist_tracks("Jazz Mix", fetch_explicit=True)
-        assert "So What" in result
-        assert "Miles Davis" in result
-
-    @responses_lib.activate
-    def test_fetch_explicit_no_playlist_found_in_api(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """fetch_explicit=True but playlist not found in API library -> graceful."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "Jazz Mix"}]))
-        monkeypatch.setattr(
-            server.asc,
-            "get_playlist_tracks_page",
-            _as_page(
-                lambda name: (
-                    True,
-                    [
-                        {
-                            "name": "So What",
-                            "artist": "Miles Davis",
-                            "album": "Kind of Blue",
-                            "duration": "9:22",
-                            "genre": "Jazz",
-                            "year": "1959",
-                            "id": "",
-                        },
-                    ],
-                )
-            ),
-        )
-        mock_cache = MagicMock()
-        mock_cache.get_explicit.return_value = None
-        monkeypatch.setattr(server, "get_track_cache", lambda: mock_cache)
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        # API returns different playlists (no match)
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/me/library/playlists",
-            json={"data": [{"id": "p.other", "attributes": {"name": "Other Playlist"}}]},
-            status=200,
-        )
-        result = server._playlist_tracks("Jazz Mix", fetch_explicit=True)
-        assert "So What" in result
-
-    def test_fetch_explicit_cache_hit_skips_api(self, monkeypatch):
-        """fetch_explicit=True but cached explicit status -> no API call needed for those tracks."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "Jazz Mix"}]))
-        monkeypatch.setattr(
-            server.asc,
-            "get_playlist_tracks_page",
-            _as_page(
-                lambda name: (
-                    True,
-                    [
-                        {
-                            "name": "So What",
-                            "artist": "Miles Davis",
-                            "album": "Kind of Blue",
-                            "duration": "9:22",
-                            "genre": "Jazz",
-                            "year": "1959",
-                            "id": "i.t1",
-                        },
-                    ],
-                )
-            ),
-        )
-        mock_cache = MagicMock()
-        mock_cache.get_explicit.return_value = "Yes"  # cache hit!
-        monkeypatch.setattr(server, "get_track_cache", lambda: mock_cache)
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: {
-                "fetch_explicit": True,
-                "output_format": "text",
-                "mode": "auto",
-                "auto_add": False,
-                "storefront": "us",
-            },
-        )
-        result = server._playlist_tracks("Jazz Mix", fetch_explicit=True)
-        assert "So What" in result
-
-
-# ---------------------------------------------------------------------------
-# _playlist_add: AppleScript ID processing (lines 3490-3594)
-# ---------------------------------------------------------------------------
-
-
-class TestPlaylistAddAppleScriptIds:
-    @responses_lib.activate
-    def test_library_id_in_applescript_mode(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """Library ID in AS mode: API lookup + asc.add_track_to_playlist."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "My PL"}]))
-        monkeypatch.setattr(server, "_has_developer_token", lambda: True)
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        monkeypatch.setattr(server.asc, "track_exists_in_playlist", lambda pl, n, a: (True, False))
-        monkeypatch.setattr(
-            server.asc, "add_track_to_playlist", lambda pl, name, artist: (True, "ok")
-        )
-        monkeypatch.setattr(server, "_verify_track_in_playlist", lambda pl, n, a: True)
-        # Library song info lookup
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/me/library/songs/i.libsong1",
-            json={"data": [{"attributes": {"name": "Hey Jude", "artistName": "Beatles"}}]},
-            status=200,
-        )
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: {
-                "auto_add": False,
-                "fetch_explicit": False,
-                "mode": "auto",
-                "storefront": "us",
-                "output_format": "text",
-            },
-        )
-        result = server._playlist_add("My PL", "i.libsong1")
-        assert "Added" in result or "Hey Jude" in result
-
-    @responses_lib.activate
-    def test_library_id_api_lookup_fails(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """Library ID info not found -> error in errors list."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "My PL"}]))
-        monkeypatch.setattr(server, "_has_developer_token", lambda: True)
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/me/library/songs/i.missing",
-            status=404,
-        )
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: {
-                "auto_add": False,
-                "fetch_explicit": False,
-                "mode": "auto",
-                "storefront": "us",
-                "output_format": "text",
-            },
-        )
-        result = server._playlist_add("My PL", "i.missing")
-        assert "Error" in result or "Could not get info" in result or "Errors" in result
-
-
-# ---------------------------------------------------------------------------
-# _playlist_tracks: API path full-fetch branches (lines 2786-2888)
 # ---------------------------------------------------------------------------
 
 
@@ -3997,351 +2862,14 @@ class TestPlaylistTracksApiPaths:
 # ---------------------------------------------------------------------------
 
 
-class TestPlaylistTracksAppleScriptFilter:
-    def test_filter_applied(self, monkeypatch):
-        """Line 2715-2720: filter applied to AppleScript tracks."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "Jazz Mix"}]))
-        monkeypatch.setattr(
-            server.asc,
-            "get_playlist_tracks_page",
-            _as_page(
-                lambda name: (
-                    True,
-                    [
-                        {
-                            "name": "So What",
-                            "artist": "Miles Davis",
-                            "album": "Kind of Blue",
-                            "duration": "9:22",
-                            "genre": "Jazz",
-                            "year": "1959",
-                            "id": "",
-                        },
-                        {
-                            "name": "Autumn Leaves",
-                            "artist": "Bill Evans",
-                            "album": "Portrait",
-                            "duration": "5:12",
-                            "genre": "Jazz",
-                            "year": "1959",
-                            "id": "",
-                        },
-                    ],
-                )
-            ),
-        )
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: {
-                "fetch_explicit": False,
-                "output_format": "text",
-                "mode": "auto",
-                "auto_add": False,
-                "storefront": "us",
-            },
-        )
-        result = server._playlist_tracks("Jazz Mix", filter="miles")
-        assert "So What" in result
-        assert "Autumn Leaves" not in result
-
-    def test_pagination_error(self, monkeypatch):
-        """Line 2724-2725: _apply_pagination error (offset > total)."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "Jazz Mix"}]))
-        monkeypatch.setattr(
-            server.asc,
-            "get_playlist_tracks_page",
-            _as_page(
-                lambda name: (
-                    True,
-                    [
-                        {
-                            "name": "So What",
-                            "artist": "Miles Davis",
-                            "album": "",
-                            "duration": "9:22",
-                            "genre": "Jazz",
-                            "year": "1959",
-                            "id": "",
-                        }
-                    ],
-                )
-            ),
-        )
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: {
-                "fetch_explicit": False,
-                "output_format": "text",
-                "mode": "auto",
-                "auto_add": False,
-                "storefront": "us",
-            },
-        )
-        # offset=100 exceeds total=1 -> error returned
-        result = server._playlist_tracks("Jazz Mix", offset=100)
-        assert "Offset" in result or "Error" in result or isinstance(result, str)
-
-
-# ---------------------------------------------------------------------------
-# _playlist_add: album add path (lines 3287-3380)
-# ---------------------------------------------------------------------------
-
-
 class TestPlaylistAddAlbum:
-    @responses_lib.activate
-    def test_album_by_name_success(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """Album name search -> find album -> fetch tracks -> add via IDs path."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "My PL"}]))
-        monkeypatch.setattr(server, "_has_developer_token", lambda: True)
-        monkeypatch.setattr(server, "get_storefront", lambda: "us")
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        monkeypatch.setattr(server.asc, "track_exists_in_playlist", lambda pl, n, a: (True, False))
-        # Album tracks go through ids_list -> asc.add_track_to_playlist (not _smart_as)
-        monkeypatch.setattr(server.asc, "add_track_to_playlist", lambda pl, n, a: (True, "ok"))
-        monkeypatch.setattr(server, "_verify_track_in_playlist", lambda pl, n, a: True)
-        monkeypatch.setattr(
-            server, "time", type("T", (), {"sleep": staticmethod(lambda s: None)})()
-        )
-        # Catalog search for album
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/catalog/us/search",
-            json={
-                "results": {
-                    "albums": {
-                        "data": [
-                            {
-                                "id": "alb123",
-                                "attributes": {
-                                    "name": "Abbey Road",
-                                    "artistName": "Beatles",
-                                },
-                            }
-                        ]
-                    }
-                }
-            },
-            status=200,
-        )
-        # Album tracks - use 10-digit numeric ID so _is_catalog_id returns True
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/catalog/us/albums/alb123/tracks",
-            json={
-                "data": [
-                    {
-                        "id": "1234567890",
-                        "attributes": {"name": "Come Together", "artistName": "Beatles"},
-                    }
-                ]
-            },
-            status=200,
-        )
-        # POST /me/library (add catalog song to library before adding to playlist)
-        responses_lib.add(
-            responses_lib.POST,
-            "https://api.music.apple.com/v1/me/library",
-            json={},
-            status=200,
-        )
-        # GET catalog song info
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/catalog/us/songs/1234567890",
-            json={
-                "data": [
-                    {
-                        "id": "1234567890",
-                        "attributes": {"name": "Come Together", "artistName": "Beatles"},
-                    }
-                ]
-            },
-            status=200,
-        )
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: {
-                "auto_add": False,
-                "fetch_explicit": False,
-                "mode": "auto",
-                "storefront": "us",
-                "output_format": "text",
-            },
-        )
-        result = server._playlist_add("My PL", album="Abbey Road")
-        assert isinstance(result, str)
+    """`album=` still works: the catalog supplies the tracks, the API adds them."""
 
-    @responses_lib.activate
-    def test_album_by_catalog_id_success(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """Album as catalog ID (all digits 9+) -> direct fetch (line 3308-3320)."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "My PL"}]))
-        monkeypatch.setattr(server, "_has_developer_token", lambda: True)
+    def _album_mocks(self, monkeypatch, tracks):
         monkeypatch.setattr(server, "get_storefront", lambda: "us")
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        monkeypatch.setattr(server.asc, "track_exists_in_playlist", lambda pl, n, a: (True, False))
-        # ids_list path uses asc.add_track_to_playlist, not _smart_as_add_track_to_playlist
-        monkeypatch.setattr(server.asc, "add_track_to_playlist", lambda pl, n, a: (True, "ok"))
-        monkeypatch.setattr(server, "_verify_track_in_playlist", lambda pl, n, a: True)
-        monkeypatch.setattr(
-            server, "time", type("T", (), {"sleep": staticmethod(lambda s: None)})()
-        )
-        # Direct album tracks fetch by catalog ID
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/catalog/us/albums/1234567890/tracks",
-            json={
-                "data": [
-                    {
-                        "id": "9876543210",
-                        "attributes": {"name": "Come Together", "artistName": "Beatles"},
-                    }
-                ]
-            },
-            status=200,
-        )
-        # POST /me/library to sync catalog track before adding to playlist
-        responses_lib.add(
-            responses_lib.POST,
-            "https://api.music.apple.com/v1/me/library",
-            json={},
-            status=200,
-        )
-        # GET catalog song info for the resolved track
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/catalog/us/songs/9876543210",
-            json={
-                "data": [
-                    {
-                        "id": "9876543210",
-                        "attributes": {"name": "Come Together", "artistName": "Beatles"},
-                    }
-                ]
-            },
-            status=200,
-        )
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: {
-                "auto_add": False,
-                "fetch_explicit": False,
-                "mode": "auto",
-                "storefront": "us",
-                "output_format": "text",
-            },
-        )
-        result = server._playlist_add("My PL", album="1234567890")
-        assert isinstance(result, str)
-
-    @responses_lib.activate
-    def test_album_by_catalog_id_api_error(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """Line 3319-3320: album catalog ID fetch returns non-200."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "My PL"}]))
         monkeypatch.setattr(server, "_has_developer_token", lambda: True)
-        monkeypatch.setattr(server, "get_storefront", lambda: "us")
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/catalog/us/albums/1234567890/tracks",
-            status=404,
-        )
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: {
-                "auto_add": False,
-                "fetch_explicit": False,
-                "mode": "auto",
-                "storefront": "us",
-                "output_format": "text",
-            },
-        )
-        result = server._playlist_add("My PL", album="1234567890")
-        assert isinstance(result, str)
-
-    @responses_lib.activate
-    def test_album_by_name_not_found(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """Lines 3364-3367: album search returns no albums."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "My PL"}]))
-        monkeypatch.setattr(server, "_has_developer_token", lambda: True)
-        monkeypatch.setattr(server, "get_storefront", lambda: "us")
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/catalog/us/search",
-            json={"results": {"albums": {"data": []}}},
-            status=200,
-        )
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: {
-                "auto_add": False,
-                "fetch_explicit": False,
-                "mode": "auto",
-                "storefront": "us",
-                "output_format": "text",
-            },
-        )
-        result = server._playlist_add("My PL", album="UnknownAlbum99")
-        assert isinstance(result, str)
-
-    def test_album_no_token_error(self, monkeypatch):
-        """Lines 3292-3298: no token for album add."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "My PL"}]))
-        monkeypatch.setattr(server, "_has_developer_token", lambda: False)
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: {
-                "auto_add": False,
-                "fetch_explicit": False,
-                "mode": "auto",
-                "storefront": "us",
-                "output_format": "text",
-            },
-        )
-        result = server._playlist_add("My PL", album="Abbey Road")
-        assert "Error" in result
-        assert "token" in result.lower()
-
-    @responses_lib.activate
-    def test_album_with_artist_match(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """Lines 3339-3342: album search with artist in result."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "My PL"}]))
-        monkeypatch.setattr(server, "_has_developer_token", lambda: True)
-        monkeypatch.setattr(server, "get_storefront", lambda: "us")
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
+        monkeypatch.setattr(server, "get_headers", lambda: {})
+        monkeypatch.setattr(server, "_get_playlist_track_names", lambda pid: (True, []))
         responses_lib.add(
             responses_lib.GET,
             "https://api.music.apple.com/v1/catalog/us/search",
@@ -4362,269 +2890,41 @@ class TestPlaylistAddAlbum:
         responses_lib.add(
             responses_lib.GET,
             "https://api.music.apple.com/v1/catalog/us/albums/alb123/tracks",
-            json={
-                "data": [
-                    {
-                        # 10-digit numeric ID so _is_catalog_id returns True
-                        "id": "1234567890",
-                        "attributes": {"name": "Come Together", "artistName": "Beatles"},
-                    }
-                ]
-            },
+            json={"data": tracks},
             status=200,
         )
-        # POST /me/library to sync catalog track
         responses_lib.add(
             responses_lib.POST,
-            "https://api.music.apple.com/v1/me/library",
-            json={},
-            status=200,
+            "https://api.music.apple.com/v1/me/library/playlists/p.dest/tracks",
+            status=204,
         )
-        # GET catalog song info
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/catalog/us/songs/1234567890",
-            json={
-                "data": [
-                    {
-                        "id": "1234567890",
-                        "attributes": {"name": "Come Together", "artistName": "Beatles"},
-                    }
-                ]
-            },
-            status=200,
-        )
-        monkeypatch.setattr(server.asc, "track_exists_in_playlist", lambda pl, n, a: (True, False))
-        # ids_list path uses asc.add_track_to_playlist, not _smart_as_add_track_to_playlist
-        monkeypatch.setattr(server.asc, "add_track_to_playlist", lambda pl, n, a: (True, "ok"))
-        monkeypatch.setattr(server, "_verify_track_in_playlist", lambda pl, n, a: True)
-        monkeypatch.setattr(
-            server, "time", type("T", (), {"sleep": staticmethod(lambda s: None)})()
-        )
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: {
-                "auto_add": False,
-                "fetch_explicit": False,
-                "mode": "auto",
-                "storefront": "us",
-                "output_format": "text",
-            },
-        )
-        result = server._playlist_add("My PL", album="Abbey Road", artist="Beatles")
-        assert isinstance(result, str)
-
-
-# ---------------------------------------------------------------------------
-# _playlist_add: IDs in AppleScript mode (lines 3490-3594)
-# ---------------------------------------------------------------------------
-
-
-class TestPlaylistAddIdsAppleScriptMode:
-    @responses_lib.activate
-    def test_catalog_id_info_not_found(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """Line 3512-3514: catalog info API returns non-200."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "My PL"}]))
-        monkeypatch.setattr(server, "_has_developer_token", lambda: True)
-        monkeypatch.setattr(server, "get_storefront", lambda: "us")
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        # Add to library ok
-        responses_lib.add(
-            responses_lib.POST,
-            "https://api.music.apple.com/v1/me/library",
-            status=202,
-        )
-        # Catalog info fails
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/catalog/us/songs/1234567890",
-            status=404,
-        )
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: {
-                "auto_add": False,
-                "fetch_explicit": False,
-                "mode": "auto",
-                "storefront": "us",
-                "output_format": "text",
-            },
-        )
-        result = server._playlist_add("My PL", "1234567890")
-        assert "Error" in result or "Could not get info" in result
 
     @responses_lib.activate
-    def test_catalog_id_duplicate_skipped(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """Lines 3551-3553: duplicate check for catalog ID in AS mode."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "My PL"}]))
-        monkeypatch.setattr(server, "_has_developer_token", lambda: True)
-        monkeypatch.setattr(server, "get_storefront", lambda: "us")
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        responses_lib.add(
-            responses_lib.POST,
-            "https://api.music.apple.com/v1/me/library",
-            status=202,
+    def test_album_by_name_adds_its_tracks(self, monkeypatch):
+        self._album_mocks(
+            monkeypatch, [{"id": "i.t1", "attributes": {"name": "Come Together"}}]
         )
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/catalog/us/songs/1234567890",
-            json={"data": [{"attributes": {"name": "Hey Jude", "artistName": "Beatles"}}]},
-            status=200,
-        )
-        # Track exists in playlist -> skip
-        monkeypatch.setattr(server.asc, "track_exists_in_playlist", lambda pl, n, a: (True, True))
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: {
-                "auto_add": False,
-                "fetch_explicit": False,
-                "mode": "auto",
-                "storefront": "us",
-                "output_format": "text",
-            },
-        )
-        result = server._playlist_add("My PL", "1234567890")
-        assert "Skipped" in result or "No tracks" in result or isinstance(result, str)
+        result = server._playlist_add("p.dest", album="Abbey Road")
+        assert "Abbey Road" in result
+        assert "Added 1 track(s) to playlist" in result
 
     @responses_lib.activate
-    def test_catalog_id_add_fails(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """Line 3564-3565: add_track_to_playlist fails for catalog ID."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "My PL"}]))
-        monkeypatch.setattr(server, "_has_developer_token", lambda: True)
+    def test_album_not_found_reports_it(self, monkeypatch):
         monkeypatch.setattr(server, "get_storefront", lambda: "us")
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        responses_lib.add(
-            responses_lib.POST,
-            "https://api.music.apple.com/v1/me/library",
-            status=202,
-        )
+        monkeypatch.setattr(server, "_has_developer_token", lambda: True)
         responses_lib.add(
             responses_lib.GET,
-            "https://api.music.apple.com/v1/catalog/us/songs/1234567890",
-            json={"data": [{"attributes": {"name": "Hey Jude", "artistName": "Beatles"}}]},
+            "https://api.music.apple.com/v1/catalog/us/search",
+            json={"results": {"albums": {"data": []}}},
             status=200,
         )
-        monkeypatch.setattr(server.asc, "track_exists_in_playlist", lambda pl, n, a: (True, False))
-        monkeypatch.setattr(
-            server.asc, "add_track_to_playlist", lambda pl, name, artist: (False, "not found")
-        )
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: {
-                "auto_add": False,
-                "fetch_explicit": False,
-                "mode": "auto",
-                "storefront": "us",
-                "output_format": "text",
-            },
-        )
-        result = server._playlist_add("My PL", "1234567890")
-        assert "Errors" in result or "not found" in result.lower()
+        result = server._playlist_add("p.dest", album="Nowhere")
+        assert "not found" in result.lower()
 
-    @responses_lib.activate
-    def test_catalog_id_verify_false_no_verify(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """Line 3566-3567: verify=False path for catalog ID."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "My PL"}]))
-        monkeypatch.setattr(server, "_has_developer_token", lambda: True)
-        monkeypatch.setattr(server, "get_storefront", lambda: "us")
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        responses_lib.add(
-            responses_lib.POST,
-            "https://api.music.apple.com/v1/me/library",
-            status=202,
-        )
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/catalog/us/songs/1234567890",
-            json={"data": [{"attributes": {"name": "Hey Jude", "artistName": "Beatles"}}]},
-            status=200,
-        )
-        monkeypatch.setattr(server.asc, "track_exists_in_playlist", lambda pl, n, a: (True, False))
-        monkeypatch.setattr(
-            server.asc, "add_track_to_playlist", lambda pl, name, artist: (True, "ok")
-        )
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: {
-                "auto_add": False,
-                "fetch_explicit": False,
-                "mode": "auto",
-                "storefront": "us",
-                "output_format": "text",
-            },
-        )
-        # verify=False skips the track verification
-        result = server._playlist_add("My PL", "1234567890", verify=False)
-        assert "Added" in result or "Hey Jude" in result
-
-    @responses_lib.activate
-    def test_catalog_id_verify_retry_fails(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """Lines 3575-3594: verify fails, retry, still fails -> error."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "My PL"}]))
-        monkeypatch.setattr(server, "_has_developer_token", lambda: True)
-        monkeypatch.setattr(server, "get_storefront", lambda: "us")
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        responses_lib.add(
-            responses_lib.POST,
-            "https://api.music.apple.com/v1/me/library",
-            status=202,
-        )
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/catalog/us/songs/1234567890",
-            json={"data": [{"attributes": {"name": "Hey Jude", "artistName": "Beatles"}}]},
-            status=200,
-        )
-        monkeypatch.setattr(server.asc, "track_exists_in_playlist", lambda pl, n, a: (True, False))
-        monkeypatch.setattr(
-            server.asc, "add_track_to_playlist", lambda pl, name, artist: (True, "ok")
-        )
-        # verify always returns False
-        monkeypatch.setattr(server, "_verify_track_in_playlist", lambda pl, n, a: False)
-        monkeypatch.setattr(server, "_VERIFY_DELAY_S", 0)
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: {
-                "auto_add": False,
-                "fetch_explicit": False,
-                "mode": "auto",
-                "storefront": "us",
-                "output_format": "text",
-            },
-        )
-        result = server._playlist_add("My PL", "1234567890", verify=True)
-        assert "Errors" in result or "persist" in result.lower() or isinstance(result, str)
-
-
-# ---------------------------------------------------------------------------
-# _playlist_add: API mode additional branches (3643-3807)
-# ---------------------------------------------------------------------------
+    def test_album_needs_an_api_token(self, monkeypatch):
+        monkeypatch.setattr(server, "_has_developer_token", lambda: False)
+        result = server._playlist_add("p.dest", album="Abbey Road")
+        assert "API token" in result
 
 
 class TestPlaylistAddApiModeBranches:
@@ -4811,317 +3111,6 @@ class TestPlaylistCopyEmptySource:
 # ---------------------------------------------------------------------------
 
 
-class TestFetchExplicitDetailBranches:
-    @responses_lib.activate
-    def test_track_response_non200_breaks(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """Line 2612-2613: track API returns non-200 -> break from inner loop."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "Jazz Mix"}]))
-        monkeypatch.setattr(
-            server.asc,
-            "get_playlist_tracks_page",
-            _as_page(
-                lambda name: (
-                    True,
-                    [
-                        {
-                            "name": "So What",
-                            "artist": "Miles Davis",
-                            "album": "Kind of Blue",
-                            "duration": "9:22",
-                            "genre": "Jazz",
-                            "year": "1959",
-                            "id": "",
-                        }
-                    ],
-                )
-            ),
-        )
-        mock_cache = MagicMock()
-        mock_cache.get_explicit.return_value = None
-        monkeypatch.setattr(server, "get_track_cache", lambda: mock_cache)
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/me/library/playlists",
-            json={"data": [{"id": "p.jazzid", "attributes": {"name": "Jazz Mix"}}]},
-            status=200,
-        )
-        # Track list returns non-200 -> break
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/me/library/playlists/p.jazzid/tracks",
-            status=503,
-        )
-        result = server._playlist_tracks("Jazz Mix", fetch_explicit=True)
-        assert "So What" in result  # Still returns even without explicit
-
-    @responses_lib.activate
-    def test_already_enriched_track_skipped(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """Line 2668-2669: track with explicit != 'Unknown' is skipped in matching loop."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "Jazz Mix"}]))
-        monkeypatch.setattr(
-            server.asc,
-            "get_playlist_tracks_page",
-            _as_page(
-                lambda name: (
-                    True,
-                    [
-                        {
-                            "name": "So What",
-                            "artist": "Miles Davis",
-                            "album": "Kind of Blue",
-                            "duration": "9:22",
-                            "genre": "Jazz",
-                            "year": "1959",
-                            "id": "i.t1",
-                        }
-                    ],
-                )
-            ),
-        )
-        mock_cache = MagicMock()
-        # Return "Yes" from cache -> track gets explicit="Yes" set -> then skipped in map
-        mock_cache.get_explicit.return_value = "Yes"
-        monkeypatch.setattr(server, "get_track_cache", lambda: mock_cache)
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/me/library/playlists",
-            json={"data": [{"id": "p.jazzid", "attributes": {"name": "Jazz Mix"}}]},
-            status=200,
-        )
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/me/library/playlists/p.jazzid/tracks",
-            json={
-                "data": [
-                    {
-                        "id": "i.t1",
-                        "attributes": {
-                            "name": "So What",
-                            "artistName": "Miles Davis",
-                            "albumName": "Kind of Blue",
-                            "contentRating": "explicit",
-                            "isrc": "US1234",
-                            "playParams": {"catalogId": "9876543210"},
-                        },
-                    }
-                ]
-            },
-            status=200,
-        )
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: {
-                "fetch_explicit": True,
-                "output_format": "text",
-                "mode": "auto",
-                "auto_add": False,
-                "storefront": "us",
-            },
-        )
-        result = server._playlist_tracks("Jazz Mix", fetch_explicit=True)
-        assert "So What" in result
-
-    @responses_lib.activate
-    def test_no_full_match_uses_partial(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """Lines 2681-2683: partial key match (name+artist) when full key not found."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "Jazz Mix"}]))
-        # Track with album="" (AS) but API has album filled in -> full key mismatch, partial matches
-        monkeypatch.setattr(
-            server.asc,
-            "get_playlist_tracks_page",
-            _as_page(
-                lambda name: (
-                    True,
-                    [
-                        {
-                            "name": "So What",
-                            "artist": "Miles Davis",
-                            "album": "",  # empty album -> full key fails
-                            "duration": "9:22",
-                            "genre": "Jazz",
-                            "year": "1959",
-                            "id": "",
-                        }
-                    ],
-                )
-            ),
-        )
-        mock_cache = MagicMock()
-        mock_cache.get_explicit.return_value = None
-        monkeypatch.setattr(server, "get_track_cache", lambda: mock_cache)
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/me/library/playlists",
-            json={"data": [{"id": "p.jazzid", "attributes": {"name": "Jazz Mix"}}]},
-            status=200,
-        )
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/me/library/playlists/p.jazzid/tracks",
-            json={
-                "data": [
-                    {
-                        "id": "i.t1",
-                        "attributes": {
-                            "name": "So What",
-                            "artistName": "Miles Davis",
-                            "albumName": "Kind of Blue",  # different from ""
-                            "contentRating": "notExplicit",
-                            "isrc": "",
-                            "playParams": {},
-                        },
-                    }
-                ]
-            },
-            status=200,
-        )
-        result = server._playlist_tracks("Jazz Mix", fetch_explicit=True)
-        assert "So What" in result
-
-    @responses_lib.activate
-    def test_no_match_caches_unknown(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """Lines 2703-2710: no API match -> cache Unknown if persistent_id set."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "Jazz Mix"}]))
-        monkeypatch.setattr(
-            server.asc,
-            "get_playlist_tracks_page",
-            _as_page(
-                lambda name: (
-                    True,
-                    [
-                        {
-                            "name": "Rare Track",
-                            "artist": "Unknown Artist",
-                            "album": "Rare Album",
-                            "duration": "3:00",
-                            "genre": "Jazz",
-                            "year": "1960",
-                            "id": "PERSIST123ABC",  # persistent ID set
-                        }
-                    ],
-                )
-            ),
-        )
-        mock_cache = MagicMock()
-        mock_cache.get_explicit.return_value = None
-        monkeypatch.setattr(server, "get_track_cache", lambda: mock_cache)
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/me/library/playlists",
-            json={"data": [{"id": "p.jazzid", "attributes": {"name": "Jazz Mix"}}]},
-            status=200,
-        )
-        # API returns different track (no match)
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/me/library/playlists/p.jazzid/tracks",
-            json={
-                "data": [
-                    {
-                        "id": "i.t99",
-                        "attributes": {
-                            "name": "Other Song",
-                            "artistName": "Other Artist",
-                            "albumName": "Other",
-                            "contentRating": "explicit",
-                            "isrc": "",
-                            "playParams": {},
-                        },
-                    }
-                ]
-            },
-            status=200,
-        )
-        result = server._playlist_tracks("Jazz Mix", fetch_explicit=True)
-        assert "Rare Track" in result
-        # Cache was called with Unknown for the persistent id
-        mock_cache.set_track_metadata.assert_called()
-
-
-# ---------------------------------------------------------------------------
-# _playlist_add: result building edge cases (lines 3616-3629)
-# ---------------------------------------------------------------------------
-
-
-class TestPlaylistAddResultBuildingEdge:
-    def test_added_errors_with_steps_shows_steps(self, monkeypatch):
-        """Line 3616-3617: added+errors, and steps non-empty -> steps in output."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "My PL"}]))
-        monkeypatch.setattr(server.asc, "track_exists_in_playlist", lambda pl, n, a: (True, False))
-        call_count = [0]
-
-        def mock_smart_add(pl, name, artist, album):
-            call_count[0] += 1
-            return (True, "ok", None) if call_count[0] == 1 else (False, "Some error", None)
-
-        monkeypatch.setattr(server, "_smart_as_add_track_to_playlist", mock_smart_add)
-        monkeypatch.setattr(server, "_verify_track_in_playlist", lambda pl, n, a: True)
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: {
-                "auto_add": False,
-                "fetch_explicit": False,
-                "mode": "auto",
-                "storefront": "us",
-                "output_format": "text",
-            },
-        )
-        result = server._playlist_add("My PL", "Song A, Song B")
-        assert "Added" in result
-
-    def test_steps_only_no_added_no_errors(self, monkeypatch):
-        """Line 3627-3628: only steps accumulated, no added/errors."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "My PL"}]))
-        # All tracks are duplicates -> step added, no added[], no errors[]
-        monkeypatch.setattr(server.asc, "track_exists_in_playlist", lambda pl, n, a: (True, True))
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: {
-                "auto_add": False,
-                "fetch_explicit": False,
-                "mode": "auto",
-                "storefront": "us",
-                "output_format": "text",
-            },
-        )
-        result = server._playlist_add("My PL", "Song A")
-        # Duplicate skipped -> steps has "Skipped...", added=[], errors=[]
-        # -> `if steps: return "\n".join(steps)` (line 3627-3628)
-        assert "Skipped" in result or isinstance(result, str)
-
-
-# ---------------------------------------------------------------------------
-# _playlist_tracks: optimized path empty/partial breaks (lines 2795, 2798)
-# ---------------------------------------------------------------------------
-
-
 class TestPlaylistTracksOptimizedBreaks:
     @responses_lib.activate
     def test_optimized_empty_data_breaks(
@@ -5197,561 +3186,8 @@ class TestPlaylistTracksOptimizedBreaks:
 # ---------------------------------------------------------------------------
 
 
-class TestFetchExplicitInnerLoopBranches:
-    def _as_tracks(self, names_artists):
-        """Build AppleScript-style track list."""
-        return [
-            {
-                "name": n,
-                "artist": a,
-                "album": "Some Album",
-                "duration": "3:00",
-                "genre": "Pop",
-                "year": "2020",
-                "id": f"i.{n.lower().replace(' ', '')}",
-            }
-            for n, a in names_artists
-        ]
-
-    @responses_lib.activate
-    def test_inner_loop_empty_tracks_breaks(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """Line 2617: explicit track fetch returns data=[] -> break from inner loop."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "My PL"}]))
-        monkeypatch.setattr(
-            server.asc,
-            "get_playlist_tracks_page",
-            _as_page(lambda name: (True, self._as_tracks([("Come Together", "Beatles")]))),
-        )
-        mock_cache = MagicMock()
-        mock_cache.get_explicit.return_value = None
-        monkeypatch.setattr(server, "get_track_cache", lambda: mock_cache)
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        # Library playlists - match the playlist by name
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/me/library/playlists",
-            json={"data": [{"id": "p.pl1", "attributes": {"name": "My PL"}}]},
-            status=200,
-        )
-        # Inner loop: returns empty data -> break at line 2617
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/me/library/playlists/p.pl1/tracks",
-            json={"data": []},
-            status=200,
-        )
-        result = server._playlist_tracks("My PL", fetch_explicit=True)
-        assert "Come Together" in result
-
-    @responses_lib.activate
-    def test_inner_loop_full_page_increments_offset(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """Line 2622: inner loop returns 100 tracks -> api_offset += 100 (loop continues)."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "My PL"}]))
-        # One AS track so fetch_explicit path is entered
-        monkeypatch.setattr(
-            server.asc,
-            "get_playlist_tracks_page",
-            _as_page(lambda name: (True, self._as_tracks([("Song 0", "Artist")]))),
-        )
-        mock_cache = MagicMock()
-        mock_cache.get_explicit.return_value = None
-        monkeypatch.setattr(server, "get_track_cache", lambda: mock_cache)
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/me/library/playlists",
-            json={"data": [{"id": "p.pl1", "attributes": {"name": "My PL"}}]},
-            status=200,
-        )
-        # First call: return exactly 100 tracks -> len==100, does NOT break, hits api_offset+=100
-        page1 = [
-            {
-                "id": f"i.t{i}",
-                "attributes": {
-                    "name": f"Song {i}",
-                    "artistName": "Artist",
-                    "albumName": "Album",
-                    "playParams": {"catalogId": ""},
-                    "isrc": "",
-                    "contentRating": "",
-                },
-            }
-            for i in range(100)
-        ]
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/me/library/playlists/p.pl1/tracks",
-            json={"data": page1},
-            status=200,
-        )
-        # Second call: return empty -> break at 2617
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/me/library/playlists/p.pl1/tracks",
-            json={"data": []},
-            status=200,
-        )
-        result = server._playlist_tracks("My PL", fetch_explicit=True)
-        assert "Song 0" in result
-
-    @responses_lib.activate
-    def test_already_enriched_track_continue(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """Line 2669: track with explicit!='Unknown' in matching loop -> continue."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "My PL"}]))
-        # Two AS tracks: one cached, one not
-        monkeypatch.setattr(
-            server.asc,
-            "get_playlist_tracks_page",
-            _as_page(
-                lambda name: (
-                    True,
-                    [
-                        {
-                            "name": "Cached Song",
-                            "artist": "Artist A",
-                            "album": "Alb",
-                            "duration": "3:00",
-                            "genre": "Pop",
-                            "year": "2020",
-                            "id": "i.cached",
-                        },
-                        {
-                            "name": "Unknown Song",
-                            "artist": "Artist B",
-                            "album": "Alb",
-                            "duration": "3:00",
-                            "genre": "Pop",
-                            "year": "2020",
-                            "id": "i.unknown",
-                        },
-                    ],
-                )
-            ),
-        )
-        # "i.cached" returns "Yes" from cache, "i.unknown" returns None
-        mock_cache = MagicMock()
-
-        def get_explicit(tid):
-            if tid == "i.cached":
-                return "Yes"
-            return None
-
-        mock_cache.get_explicit.side_effect = get_explicit
-        monkeypatch.setattr(server, "get_track_cache", lambda: mock_cache)
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/me/library/playlists",
-            json={"data": [{"id": "p.pl1", "attributes": {"name": "My PL"}}]},
-            status=200,
-        )
-        # API tracks for the one unknown track
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/me/library/playlists/p.pl1/tracks",
-            json={
-                "data": [
-                    {
-                        "id": "i.unknown",
-                        "attributes": {
-                            "name": "Unknown Song",
-                            "artistName": "Artist B",
-                            "albumName": "Alb",
-                            "contentRating": "explicit",
-                            "isrc": "",
-                            "playParams": {"catalogId": ""},
-                        },
-                    }
-                ]
-            },
-            status=200,
-        )
-        result = server._playlist_tracks("My PL", fetch_explicit=True)
-        # "Cached Song" had explicit="Yes" (from cache) -> continue at 2669
-        # "Unknown Song" was matched via API -> explicit set
-        assert "Cached Song" in result
-
-    @responses_lib.activate
-    def test_name_only_fallback(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """Line 2687: name-only fallback when full/partial match fails but name is unique."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "My PL"}]))
-        # AS track with artist "Lennon" but API has artist "Beatles" -> partial match fails
-        monkeypatch.setattr(
-            server.asc,
-            "get_playlist_tracks_page",
-            _as_page(
-                lambda name: (
-                    True,
-                    [
-                        {
-                            "name": "Come Together",
-                            "artist": "Lennon",  # Different from API artist
-                            "album": "Different Album",  # Different from API album
-                            "duration": "3:00",
-                            "genre": "Rock",
-                            "year": "1969",
-                            "id": "i.ct",
-                        }
-                    ],
-                )
-            ),
-        )
-        mock_cache = MagicMock()
-        mock_cache.get_explicit.return_value = None
-        monkeypatch.setattr(server, "get_track_cache", lambda: mock_cache)
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/me/library/playlists",
-            json={"data": [{"id": "p.pl1", "attributes": {"name": "My PL"}}]},
-            status=200,
-        )
-        # API track: same name but different artist/album -> only name matches
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/me/library/playlists/p.pl1/tracks",
-            json={
-                "data": [
-                    {
-                        "id": "i.api1",
-                        "attributes": {
-                            "name": "Come Together",
-                            "artistName": "Beatles",  # Different from track_data artist
-                            "albumName": "Abbey Road",  # Different from track_data album
-                            "contentRating": "notExplicit",
-                            "isrc": "GBUM71029604",
-                            "playParams": {"catalogId": "9876543210"},
-                        },
-                    }
-                ]
-            },
-            status=200,
-        )
-        result = server._playlist_tracks("My PL", fetch_explicit=True)
-        # Name-only fallback at 2687 fired -> explicit enriched
-        assert "Come Together" in result
-
-    @responses_lib.activate
-    def test_exception_in_explicit_fetch(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """Lines 2711-2712: exception in explicit enrichment try block -> pass."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "My PL"}]))
-        monkeypatch.setattr(
-            server.asc,
-            "get_playlist_tracks_page",
-            _as_page(lambda name: (True, self._as_tracks([("Song X", "Artist X")]))),
-        )
-
-        # get_track_cache() throws -> caught by except Exception at 2711
-        def raise_error():
-            raise RuntimeError("cache unavailable")
-
-        monkeypatch.setattr(server, "get_track_cache", raise_error)
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        result = server._playlist_tracks("My PL", fetch_explicit=True)
-        # Despite exception, result still returns track listing (exception is swallowed)
-        assert "Song X" in result
-
-
-# ---------------------------------------------------------------------------
-# _playlist_add: remaining missing lines in assigned ranges
-# ---------------------------------------------------------------------------
-
-
 class TestPlaylistAddRemainingCoverage:
-    """Covers lines: 3302-3303, 3367, 3375-3376, 3517, 3533, 3539-3540,
-    3585, 3617, 3629, 3757, 3806-3807."""
-
-    def _base_monkeypatches(self, monkeypatch):
-        """Common monkeypatches for AppleScript-mode _playlist_add tests."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "My PL"}]))
-        monkeypatch.setattr(server, "_has_developer_token", lambda: True)
-        monkeypatch.setattr(server, "get_storefront", lambda: "us")
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: {
-                "auto_add": False,
-                "fetch_explicit": False,
-                "mode": "auto",
-                "storefront": "us",
-                "output_format": "text",
-            },
-        )
-
-    def test_album_resolve_error(self, monkeypatch):
-        """Lines 3302-3303: _resolve_album returns item with error -> steps.append + continue."""
-        from applemusic_mcp.server import InputType, ResolvedInput
-
-        self._base_monkeypatches(monkeypatch)
-        monkeypatch.setattr(
-            server,
-            "_resolve_album",
-            lambda album, artist="": [
-                ResolvedInput(input_type=InputType.NAME, value="Bad Album", error="Not found")
-            ],
-        )
-        result = server._playlist_add("My PL", album="Bad Album")
-        assert isinstance(result, str)
-
-    @responses_lib.activate
-    def test_album_name_search_api_error(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """Line 3367: album name search returns non-200 API error."""
-        from applemusic_mcp.server import InputType, ResolvedInput
-
-        self._base_monkeypatches(monkeypatch)
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        monkeypatch.setattr(
-            server,
-            "_resolve_album",
-            lambda album, artist="": [ResolvedInput(input_type=InputType.NAME, value=album)],
-        )
-        # Search returns 500 -> line 3367
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/catalog/us/search",
-            status=500,
-        )
-        result = server._playlist_add("My PL", album="Abbey Road")
-        assert isinstance(result, str)
-
-    @responses_lib.activate
-    def test_album_exception_in_try_block(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """Lines 3375-3376: exception in album try block -> steps.append(exception message)."""
-        from applemusic_mcp.server import InputType, ResolvedInput
-
-        self._base_monkeypatches(monkeypatch)
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        monkeypatch.setattr(
-            server,
-            "_resolve_album",
-            lambda album, artist="": [ResolvedInput(input_type=InputType.NAME, value=album)],
-        )
-        # get_headers raises inside the album try block -> caught at 3375
-        orig_get_headers = server.get_headers
-        call_count = [0]
-
-        def get_headers_raises_once():
-            call_count[0] += 1
-            if call_count[0] == 1:
-                raise RuntimeError("connection error")
-            return orig_get_headers()
-
-        monkeypatch.setattr(server, "get_headers", get_headers_raises_once)
-        result = server._playlist_add("My PL", album="Abbey Road")
-        assert "connection error" in result or isinstance(result, str)
-
-    @responses_lib.activate
-    def test_catalog_info_returns_empty_data(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """Line 3517: catalog info returns 200 but data=[] -> continue (no error appended)."""
-        self._base_monkeypatches(monkeypatch)
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        # Add to library ok
-        responses_lib.add(
-            responses_lib.POST,
-            "https://api.music.apple.com/v1/me/library",
-            status=202,
-        )
-        # Catalog info 200 but empty data
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/catalog/us/songs/1234567890",
-            json={"data": []},
-            status=200,
-        )
-        # Pass catalog ID (9+ numeric digits)
-        result = server._playlist_add("My PL", "1234567890")
-        # Empty data -> continue -> no added, no errors, no name-related step
-        assert isinstance(result, str)
-
-    @responses_lib.activate
-    def test_library_info_returns_empty_data(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """Line 3533: library info returns 200 but data=[] -> continue. Line 3629: no steps."""
-        self._base_monkeypatches(monkeypatch)
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        # Library ID lookup returns 200 but empty data -> continue (no error appended)
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/me/library/songs/i.libid",
-            json={"data": []},
-            status=200,
-        )
-        # No steps or errors added (library IDs don't add the "Adding to library..." step)
-        # -> else: if steps: ... else: return "No tracks added"
-        result = server._playlist_add("My PL", "i.libid")
-        assert "No tracks added" in result or isinstance(result, str)
-
-    @responses_lib.activate
-    def test_no_name_in_catalog_attrs(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """Lines 3539-3540: catalog info returns data with empty name -> errors.append."""
-        self._base_monkeypatches(monkeypatch)
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        monkeypatch.setattr(
-            server, "time", type("T", (), {"sleep": staticmethod(lambda s: None)})()
-        )
-        responses_lib.add(
-            responses_lib.POST,
-            "https://api.music.apple.com/v1/me/library",
-            status=202,
-        )
-        # data has entry but no "name" -> attrs.get("name","") == ""
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/catalog/us/songs/1234567890",
-            json={
-                "data": [
-                    {
-                        "id": "1234567890",
-                        "attributes": {"artistName": "Beatles"},  # No "name" key
-                    }
-                ]
-            },
-            status=200,
-        )
-        result = server._playlist_add("My PL", "1234567890")
-        assert "No name found" in result or isinstance(result, str)
-
-    @responses_lib.activate
-    def test_retry_success_after_verify_fail(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """Line 3585: first add succeeds, verify fails, retry succeeds + verify passes."""
-        self._base_monkeypatches(monkeypatch)
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        monkeypatch.setattr(
-            server, "time", type("T", (), {"sleep": staticmethod(lambda s: None)})()
-        )
-        responses_lib.add(
-            responses_lib.POST,
-            "https://api.music.apple.com/v1/me/library",
-            status=202,
-        )
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/catalog/us/songs/1234567890",
-            json={
-                "data": [
-                    {
-                        "id": "1234567890",
-                        "attributes": {"name": "Come Together", "artistName": "Beatles"},
-                    }
-                ]
-            },
-            status=200,
-        )
-        monkeypatch.setattr(server.asc, "track_exists_in_playlist", lambda pl, n, a: (True, False))
-        # First add: success. First verify: fail. Retry add: success. Retry verify: success.
-        add_calls = [0]
-
-        def add_track(pl, name, artist):
-            add_calls[0] += 1
-            return (True, "ok")
-
-        verify_calls = [0]
-
-        def verify_track(pl, name, artist):
-            verify_calls[0] += 1
-            return verify_calls[0] > 1  # First verify fails, retry verify passes
-
-        monkeypatch.setattr(server.asc, "add_track_to_playlist", add_track)
-        monkeypatch.setattr(server, "_verify_track_in_playlist", verify_track)
-        result = server._playlist_add("My PL", "1234567890")
-        # Retry succeeded -> added.append at line 3585
-        assert "Come Together" in result or isinstance(result, str)
-
-    @responses_lib.activate
-    def test_added_and_errors_with_nonempty_steps(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """Line 3617: elif added and errors: ... if steps: msg += steps."""
-        self._base_monkeypatches(monkeypatch)
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        monkeypatch.setattr(
-            server, "time", type("T", (), {"sleep": staticmethod(lambda s: None)})()
-        )
-        # Catalog ID -> steps gets "Adding catalog ID..." message, then added gets track
-        responses_lib.add(
-            responses_lib.POST,
-            "https://api.music.apple.com/v1/me/library",
-            status=202,
-        )
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/catalog/us/songs/1234567890",
-            json={
-                "data": [
-                    {
-                        "id": "1234567890",
-                        "attributes": {"name": "Come Together", "artistName": "Beatles"},
-                    }
-                ]
-            },
-            status=200,
-        )
-        monkeypatch.setattr(server.asc, "track_exists_in_playlist", lambda pl, n, a: (True, False))
-        monkeypatch.setattr(server.asc, "add_track_to_playlist", lambda pl, n, a: (True, "ok"))
-        monkeypatch.setattr(server, "_verify_track_in_playlist", lambda pl, n, a: True)
-        # Track name that fails -> goes to errors
-        monkeypatch.setattr(
-            server,
-            "_smart_as_add_track_to_playlist",
-            lambda pl, n, a, alb: (False, "not found", None),
-        )
-        # Pass both a failing name AND a catalog ID
-        result = server._playlist_add("My PL", "Song Fail\n1234567890")
-        # added=[CometTogether], errors=[SongFail], steps=["Adding catalog ID..."]
-        # -> elif added and errors: + if steps: msg += steps (line 3617)
-        assert isinstance(result, str)
-
-    @responses_lib.activate
-    def test_no_tracks_added_no_steps(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """Line 3629: library ID, empty data -> no added/errors/steps -> 'No tracks added'."""
-        self._base_monkeypatches(monkeypatch)
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        # Library ID (not catalog) -> no "Adding to library" step
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/me/library/songs/i.libXYZ",
-            json={"data": []},
-            status=200,
-        )
-        result = server._playlist_add("My PL", "i.libXYZ")
-        # data=[] -> continue at 3533, steps=[], added=[], errors=[]
-        # else: if steps: (False) -> return "No tracks added"
-        assert "No tracks added" in result
+    """API-mode branches of _playlist_add (playlist by id)."""
 
     @responses_lib.activate
     def test_api_mode_dup_check_not_duplicate(
@@ -5844,12 +3280,13 @@ def test_action_folders_shows_tree(monkeypatch):
     """`playlist(action='folders')` exposes the folder tree (folders aren't in list)."""
     from applemusic_mcp import server
 
-    monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-    monkeypatch.setattr(server.asc, "get_folder_tree", lambda: (True, "[My Folder]\n  Boom Boom"))
+    monkeypatch.setattr(
+        server.amp_api, "list_folders", lambda: [{"id": "f.1", "name": "My Folder"}]
+    )
     out = server.playlist(action="folders")
-    assert "[My Folder]" in out and "Boom Boom" in out
+    assert "My Folder" in out and "f.1" in out
     # `tree` is an accepted alias
-    assert "[My Folder]" in server.playlist(action="tree")
+    assert "My Folder" in server.playlist(action="tree")
 
 
 # ---------------------------------------------------------------------------
@@ -5908,7 +3345,7 @@ class TestPlaylistAddDryRun:
             server,
             "_resolve_playlist",
             lambda p: server.ResolvedPlaylist(
-                raw_input=p, api_id="p.1", applescript_name="My Playlist"
+                raw_input=p, api_id="p.1"
             ),
         )
         monkeypatch.setattr(server.amp_api, "get_tracks", lambda pid: existing or [])
@@ -5923,11 +3360,6 @@ class TestPlaylistAddDryRun:
             monkeypatch.setattr(
                 server.amp_api, name, lambda *a, **k: pytest.fail(f"dry_run called {name}")
             )
-        monkeypatch.setattr(
-            server.asc,
-            "add_track_to_playlist",
-            lambda *a, **k: pytest.fail("dry_run called AppleScript add"),
-        )
         self._stub(
             monkeypatch,
             song={"id": "111", "attributes": {"name": "Yesterday", "artistName": "The Beatles"}},
@@ -6009,7 +3441,7 @@ class TestPlaylistAddDryRun:
             server,
             "_resolve_playlist",
             lambda p: server.ResolvedPlaylist(
-                raw_input=p, api_id=None, applescript_name="My Playlist"
+                raw_input=p, api_id=None
             ),
         )
         monkeypatch.setattr(
@@ -6201,7 +3633,7 @@ class TestDryRunFidelity:
         monkeypatch.setattr(
             server,
             "_resolve_playlist",
-            lambda p: server.ResolvedPlaylist(raw_input=p, api_id="p.1", applescript_name="P"),
+            lambda p: server.ResolvedPlaylist(raw_input=p, api_id="p.1"),
         )
         monkeypatch.setattr(server.amp_api, "get_tracks", lambda pid: [])
         monkeypatch.setattr(server.amp_api, "search_library_songs", lambda q, n: [])
@@ -6215,7 +3647,7 @@ class TestDryRunFidelity:
         monkeypatch.setattr(
             server,
             "_resolve_playlist",
-            lambda p: server.ResolvedPlaylist(raw_input=p, api_id="p.1", applescript_name="P"),
+            lambda p: server.ResolvedPlaylist(raw_input=p, api_id="p.1"),
         )
         monkeypatch.setattr(server.amp_api, "get_tracks", lambda pid: existing or [])
         monkeypatch.setattr(server.amp_api, "search_library_songs", lambda q, n: lib or [])
@@ -6422,16 +3854,23 @@ class TestAddReportsWhatLanded:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# playlist(action="tracks") paging a playlist longer than one API page
+# ---------------------------------------------------------------------------
+
+
 def _long_playlist(n):
     return [
         {
-            "name": f"Song {i}",
-            "artist": "Artist A" if i % 2 == 0 else "Artist B",
-            "album": "Album",
-            "duration": "3:00",
-            "genre": "Jazz",
-            "year": "2020",
-            "id": f"PID{i}",
+            "id": f"i.{i}",
+            "attributes": {
+                "name": f"Song {i}",
+                "artistName": "Artist A" if i % 2 == 0 else "Artist B",
+                "albumName": "Album",
+                "durationInMillis": 180000,
+                "genreNames": ["Jazz"],
+                "releaseDate": "2020",
+            },
         }
         for i in range(n)
     ]
@@ -6439,23 +3878,35 @@ def _long_playlist(n):
 
 @pytest.fixture
 def long_playlist(monkeypatch):
-    """A 2253-track playlist on macOS, behind the paged readers.
+    """A 2253-track playlist behind the paged API reader.
 
-    Stubs Music.app one level down (`get_playlist_tracks_page`) so the real
-    paging, filtering and "read the whole playlist" logic runs; `reads` records
-    every (offset, limit) pair that was requested from Music.app.
+    Stubs `requests.get` one level down so the real paging, filtering and
+    "read the whole playlist" logic runs; `reads` records every (offset, limit)
+    pair that was requested from the API.
     """
     tracks = _long_playlist(2253)
     reads = []
 
-    def page(name, offset=0, limit=500):
-        reads.append((offset, limit))
-        return True, tracks[offset : offset + limit], len(tracks)
+    class _R:
+        status_code = 200
 
-    monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-    monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
-    monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "Long Mix"}]))
-    monkeypatch.setattr(server.asc, "get_playlist_tracks_page", page)
+        def __init__(self, payload):
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+        def raise_for_status(self):
+            pass
+
+    def get(url, headers=None, params=None, timeout=None):
+        offset = (params or {}).get("offset", 0)
+        limit = (params or {}).get("limit", 100)
+        reads.append((offset, limit))
+        return _R({"data": tracks[offset : offset + limit], "meta": {"total": len(tracks)}})
+
+    monkeypatch.setattr(server, "get_headers", lambda: {})
+    monkeypatch.setattr(server.requests, "get", get)
     monkeypatch.setattr(
         server,
         "get_user_preferences",
@@ -6478,104 +3929,71 @@ def types_namespace(**kw):
 
 class TestPlaylistTracksLongPlaylist:
     def test_default_reads_one_page_and_reports_the_real_total(self, long_playlist):
-        result = server._playlist_tracks("Long Mix")
+        result = server._playlist_tracks("p.long")
 
         assert "=== 1-500 of 2253 tracks ===" in result
         assert "Song 499" in result and "Song 500" not in result
-        assert long_playlist.reads == [(0, 500)], "must not read the other 1753 tracks"
+        assert sum(limit for _offset, limit in long_playlist.reads) == 500, (
+            "must not read the other 1753 tracks"
+        )
 
     def test_a_truncated_listing_says_how_to_get_the_rest(self, long_playlist):
-        result = server._playlist_tracks("Long Mix")
+        result = server._playlist_tracks("p.long")
         assert "1753 more tracks" in result
         assert "offset=500" in result and "limit=0" in result
 
     def test_offset_reaches_past_the_first_500(self, long_playlist):
         """The bug: offset=2200 failed with 'Offset 2200 exceeds 500 items'."""
-        result = server._playlist_tracks("Long Mix", limit=3, offset=2200)
+        result = server._playlist_tracks("p.long", limit=3, offset=2200)
 
         assert "=== 2201-2203 of 2253 tracks ===" in result
         assert "Song 2200" in result and "Song 2202" in result
         assert "exceeds" not in result
-        assert long_playlist.reads == [(2200, 3)]
-
-    def test_next_offset_skips_past_an_unreadable_track(self, long_playlist, monkeypatch):
-        """The per-track fallback leaves out a track it cannot read, so a page can
-        show 499 rows for 500 positions. The note must point at position 500, or
-        the next page starts inside the one just shown and repeats a track."""
-        monkeypatch.setattr(
-            server.asc,
-            "get_playlist_tracks_page",
-            lambda n, offset=0, limit=500: (True, long_playlist.tracks[:499], 2253),
-        )
-        result = server._playlist_tracks("Long Mix")
-
-        assert "offset=500 " in result or "offset=500 for" in result
-        assert "1753 more tracks" in result
+        assert long_playlist.reads[0][0] == 0
+        assert sum(limit for _offset, limit in long_playlist.reads) == 2203
 
     def test_the_last_page_has_no_more_hint(self, long_playlist):
-        result = server._playlist_tracks("Long Mix", limit=500, offset=2000)
+        result = server._playlist_tracks("p.long", limit=500, offset=2000)
         assert "=== 2001-2253 of 2253 tracks ===" in result
         assert "more tracks" not in result
 
     def test_offset_past_the_end_names_the_real_size(self, long_playlist):
-        result = server._playlist_tracks("Long Mix", limit=3, offset=5000)
+        result = server._playlist_tracks("p.long", limit=3, offset=5000)
         assert result.startswith("Offset 5000 exceeds 2253 items")
 
     def test_limit_zero_returns_every_track(self, long_playlist):
-        result = server._playlist_tracks("Long Mix", limit=0)
+        result = server._playlist_tracks("p.long", limit=0)
 
         assert "=== 2253 tracks ===" in result
         assert "Song 2252" in result
         assert "more tracks" not in result
-        assert long_playlist.reads == [(0, 2**31 - 1)], "read to the end, a page at a time"
-
-    def test_limit_zero_reports_the_real_size_when_a_track_is_unreadable(
-        self, long_playlist, monkeypatch
-    ):
-        """The per-track fallback skips a track it cannot read. The total must still
-        be the playlist's size from Music.app, not a count of what came back."""
-        monkeypatch.setattr(
-            server.asc,
-            "get_playlist_tracks_page",
-            lambda n, offset=0, limit=500: (True, long_playlist.tracks[:2252], 2253),
-        )
-        result = server._playlist_tracks("Long Mix", limit=0)
-        assert "=== 1-2252 of 2253 tracks ===" in result
-        assert "more tracks" not in result, "the read reached the end; nothing follows"
+        assert len(long_playlist.reads) == 23, "read to the end, a page at a time"
 
     def test_limit_zero_with_an_offset_returns_the_rest(self, long_playlist):
-        result = server._playlist_tracks("Long Mix", limit=0, offset=2250)
+        result = server._playlist_tracks("p.long", limit=0, offset=2250)
         assert "=== 2251-2253 of 2253 tracks ===" in result
         assert "Song 2250" in result and "Song 2252" in result
 
     def test_json_stays_pure_data_without_a_hint(self, long_playlist):
-        result = server._playlist_tracks("Long Mix", limit=2, format="json")
+        result = server._playlist_tracks("p.long", limit=2, format="json")
         assert "more tracks" not in result and "offset=" not in result
 
     def test_filter_searches_the_whole_playlist_not_the_first_500(self, long_playlist):
         """Song 2250 is far past the first page; the filter must still find it."""
-        result = server._playlist_tracks("Long Mix", filter="Song 2250")
+        result = server._playlist_tracks("p.long", filter="Song 2250")
 
         assert "Song 2250" in result
-        assert len(long_playlist.reads) > 1, "pages were read until a match turned up"
-
-    def test_filter_stops_reading_once_it_has_enough_matches(self, long_playlist):
-        result = server._playlist_tracks("Long Mix", filter="Artist A", limit=10)
-
-        assert "Song 0 " in result and "Song 18 " in result
-        assert "Song 20 " not in result
-        assert long_playlist.reads == [(0, 500)], "ten matches are in the first page"
-        assert "More matching tracks may follow" in result and "offset=10" in result
+        assert len(long_playlist.reads) > 1, "pages were read until the end"
 
     def test_filter_that_reaches_the_end_reports_the_match_count(self, long_playlist):
-        result = server._playlist_tracks("Long Mix", filter="Song 22", limit=0)
+        result = server._playlist_tracks("p.long", filter="Song 22", limit=0)
 
-        # Song 22, 220-229, 2200-2252 (53 of them, 2253 tracks run to 2252)
+        # Song 22, 220-229, 2200-2252 (64 of them, 2253 tracks run to 2252)
         assert "=== 64 tracks ===" in result
         assert "More matching tracks" not in result
 
     def test_filter_with_no_match_is_empty_not_an_error(self, long_playlist):
-        result = server._playlist_tracks("Long Mix", filter="no such song")
+        result = server._playlist_tracks("p.long", filter="no such song")
         assert "No results" in result
         assert "Error" not in result
 
@@ -6584,8 +4002,8 @@ class TestPlaylistTracksLongPlaylist:
         the whole playlist and the default does not pretend to."""
         monkeypatch.setenv("APPLEMUSIC_CACHE_DIR", str(tmp_path))
 
-        server._playlist_tracks("Long Mix", export="csv", format="none")
-        server._playlist_tracks("Long Mix", limit=0, export="json", format="none")
+        server._playlist_tracks("p.long", export="csv", format="none")
+        server._playlist_tracks("p.long", limit=0, export="json", format="none")
 
         (csv_file,) = tmp_path.glob("playlist_*.csv")
         (json_file,) = tmp_path.glob("playlist_*.json")
@@ -6593,13 +4011,15 @@ class TestPlaylistTracksLongPlaylist:
             assert len(list(csv.DictReader(f))) == 500
         assert len(json.loads(json_file.read_text())) == 2253
 
-    def test_music_app_failure_is_reported(self, long_playlist, monkeypatch):
+    def test_api_failure_is_reported(self, long_playlist, monkeypatch):
         monkeypatch.setattr(
-            server.asc,
-            "get_playlist_tracks_page",
-            lambda n, offset=0, limit=500: (False, "boom", 0),
+            server.requests,
+            "get",
+            lambda *a, **k: (_ for _ in ()).throw(
+                server.requests.exceptions.ConnectionError("boom")
+            ),
         )
-        assert server._playlist_tracks("Long Mix").startswith("Error:")
+        assert "Error" in server._playlist_tracks("p.long")
 
 
 def test_playlist_tool_advertises_its_default_limit():
@@ -6614,20 +4034,48 @@ def test_playlist_tool_advertises_its_default_limit():
 
 class TestPlaylistCopyLongPlaylist:
     def test_copy_copies_the_whole_source_not_the_first_500(self, monkeypatch):
-        """A 1200-track copy reports all 1200. The copy used to stop at 500; the
-        paging itself is covered by test_copy_playlist_tracks_duplicates_in_chunks
-        in test_applescript_cov.py."""
-        calls = _as_copy_source(monkeypatch, 1200)
-        result = server._playlist_copy("Source PL", "Copy PL")
+        """A 1200-track copy reports all 1200. The copy used to stop at 500."""
+        tracks = [
+            {"id": f"i.t{i}", "attributes": {"name": f"Song {i}", "artistName": "Artist"}}
+            for i in range(1200)
+        ]
+        posted = []
 
-        assert calls == [("id", "Source PL"), ("create", "Copy PL"), ("SRCPERSIST", "NEWPERSIST")]
+        class _R:
+            def __init__(self, code, payload=None):
+                self.status_code = code
+                self._payload = payload or {}
+
+            def json(self):
+                return self._payload
+
+            def raise_for_status(self):
+                pass
+
+        def get(url, headers=None, params=None, timeout=None):
+            offset = (params or {}).get("offset", 0)
+            return _R(200, {"data": tracks[offset : offset + 100]})
+
+        def post(url, headers=None, json=None, timeout=None):
+            if url.endswith("/me/library/playlists"):
+                return _R(200, {"data": [{"id": "p.new"}]})
+            posted.extend(json["data"])
+            return _R(204)
+
+        monkeypatch.setattr(server, "get_headers", lambda: {})
+        monkeypatch.setattr(server.requests, "get", get)
+        monkeypatch.setattr(server.requests, "post", post)
+        result = server._playlist_copy("p.src", "Copy PL")
+
         assert "with 1200 tracks" in result
+        assert "p.new" in result
+        assert len(posted) == 1200
 
 
 class TestPlaylistTracksOffsets:
     def test_negative_offset_is_treated_as_zero(self, long_playlist):
         """A negative offset used to be labelled onto the page header and hint as given."""
-        result = server._playlist_tracks("Long Mix", limit=3, offset=-5)
+        result = server._playlist_tracks("p.long", limit=3, offset=-5)
 
         assert "=== 1-3 of 2253 tracks ===" in result
         assert "offset=3" in result
@@ -6685,24 +4133,6 @@ class TestPlaylistTracksOffsets:
         result = server._playlist_tracks("p.pl", limit=3, offset=-2)
         assert "=== 1-3 of 8 tracks ===" in result
         assert "Song 0" in result and "Song 2" in result
-
-    def test_audit_counts_the_matches_read_when_a_filtered_read_stops_early(
-        self, long_playlist, monkeypatch
-    ):
-        """total_count is None when a filter stops at its limit; the audit entry must
-        not turn that into 0 for a query that matched tracks."""
-        cache = MagicMock()
-        cache.get_explicit.return_value = "Clean"
-        monkeypatch.setattr(server, "get_track_cache", lambda: cache)
-        logged = []
-        monkeypatch.setattr(
-            server.audit_log, "log_action", lambda action, details, **kw: logged.append(details)
-        )
-
-        server._playlist_tracks("Long Mix", filter="Artist A", limit=10, fetch_explicit=True)
-
-        (details,) = logged
-        assert details["track_count"] == 10
 
 
 class TestLibrarySearchByTitle:

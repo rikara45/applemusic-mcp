@@ -1,12 +1,10 @@
 """Tests for server module."""
 
 import json
-import time
-from unittest.mock import patch, MagicMock
-
-import pytest
-import sys
 import re
+import time
+from unittest.mock import MagicMock, patch
+
 import responses
 
 from applemusic_mcp import server
@@ -152,12 +150,9 @@ class TestCreatePlaylist:
 
     @responses.activate
     def test_creates_playlist_successfully(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
+        self, mock_config_dir, mock_developer_token, mock_user_token
     ):
-        """Should create playlist via API and return ID."""
-        # Disable AppleScript to test API path
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
-
+        """Should create playlist via the API and return ID."""
         # Setup tokens
         dev_token_file = mock_config_dir / "developer_token.json"
         with open(dev_token_file, "w") as f:
@@ -167,11 +162,10 @@ class TestCreatePlaylist:
         with open(user_token_file, "w") as f:
             json.dump({"music_user_token": mock_user_token}, f)
 
-        # With a developer token, off-macOS create takes the SANCTIONED rail
-        # (api.music.apple.com), not the grey amp-api host.
+        # Creating a playlist takes the web (amp-api) rail.
         responses.add(
             responses.POST,
-            "https://api.music.apple.com/v1/me/library/playlists",
+            "https://amp-api.music.apple.com/v1/me/library/playlists",
             json={"data": [{"id": "p.newplaylist123"}]},
             status=201,
         )
@@ -182,38 +176,14 @@ class TestCreatePlaylist:
 
         assert "My New Playlist" in result
         assert "p.newplaylist123" in result
-        assert "Apple Music API" in result  # sanctioned-rail label
+        assert "via web player" in result
 
 
-@pytest.mark.skipif(
-    sys.platform != "darwin",
-    reason="_playlist_rename is defined inside `if APPLESCRIPT_AVAILABLE:` "
-    "and only materializes at import time on macOS. Tests that monkeypatch "
-    "APPLESCRIPT_AVAILABLE=True at runtime can't conjure the function on "
-    "Linux. Follow-up: move the wrapper out of the conditional block.",
-)
 class TestRenamePlaylist:
-    """Tests for rename_playlist function (AppleScript path)."""
-
-    def test_renames_playlist_successfully(self, monkeypatch):
-        """Should rename playlist via AppleScript."""
-
-        # Mock AppleScript to return success
-        def mock_rename_playlist(old_name, new_name):
-            return (True, f"Renamed: {old_name} → {new_name}")
-
-        monkeypatch.setattr(server.asc, "rename_playlist", mock_rename_playlist)
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-
-        result = server.playlist(action="rename", playlist="Old Name", new_name="New Name")
-
-        assert "Renamed" in result
-        assert "Old Name" in result
-        assert "New Name" in result
+    """Tests for rename_playlist function (API path)."""
 
     def test_off_macos_routes_to_web(self, monkeypatch):
-        """Off macOS, rename routes to the web rail (no longer a macOS-only error)."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
+        """Rename routes to the web rail."""
         monkeypatch.setattr(server, "_write_rail", lambda *a, **k: "web")
         monkeypatch.setattr(server.amp_api, "resolve_playlist_id", lambda name, **k: "p.r1")
         monkeypatch.setattr(server.amp_api, "rename_playlist", lambda pid, new: (True, "ok"))
@@ -224,8 +194,6 @@ class TestRenamePlaylist:
 
     def test_requires_new_name(self, monkeypatch):
         """Should error when new_name not provided."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-
         result = server.playlist(action="rename", playlist="Old Name", new_name="")
 
         assert "Error" in result
@@ -233,20 +201,6 @@ class TestRenamePlaylist:
 
 class TestCreateFolder:
     """Tests for create_folder action (AppleScript path)."""
-
-    def test_creates_folder_successfully(self, monkeypatch):
-        """Should create folder via AppleScript."""
-
-        def mock_create_folder(name):
-            return (True, "ABCD1234")
-
-        monkeypatch.setattr(server.asc, "create_folder", mock_create_folder)
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-
-        result = server.playlist(action="create_folder", name="My Folder")
-
-        assert "My Folder" in result
-        assert "ABCD1234" in result
 
     def test_off_macos_routes_to_web(self, monkeypatch):
         """Off macOS, folder create routes to the web rail (no macOS-only error)."""
@@ -260,10 +214,8 @@ class TestCreateFolder:
 
         assert "My Folder" in result and "macOS" not in result
 
-    def test_requires_name(self, monkeypatch):
+    def test_requires_name(self):
         """Should error when name not provided."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-
         result = server.playlist(action="create_folder", name="")
 
         assert "Error" in result
@@ -271,20 +223,6 @@ class TestCreateFolder:
 
 class TestMoveToFolder:
     """Tests for move action (AppleScript path)."""
-
-    def test_moves_playlist_successfully(self, monkeypatch):
-        """Should move playlist to folder via AppleScript."""
-
-        def mock_move_to_folder(item_name, folder_name):
-            return (True, f"Moved '{item_name}' to folder '{folder_name}'")
-
-        monkeypatch.setattr(server.asc, "move_to_folder", mock_move_to_folder)
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-
-        result = server.playlist(action="move", playlist="My Playlist", name="My Folder")
-
-        assert "My Playlist" in result
-        assert "My Folder" in result
 
     def test_off_macos_routes_to_web(self, monkeypatch):
         """Off macOS, move routes to the web rail (no longer a macOS-only error)."""
@@ -300,22 +238,11 @@ class TestMoveToFolder:
 
         assert "Moved" in result and "macOS" not in result
 
-    def test_requires_playlist_name(self, monkeypatch):
+    def test_requires_playlist_name(self):
         """Should error when playlist name not provided."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-
         result = server.playlist(action="move", playlist="", name="My Folder")
 
         assert "Error" in result
-
-    def test_move_to_root_requires_confirmation(self, monkeypatch):
-        """Should explain limitation and require confirmation when no folder."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-
-        result = server.playlist(action="move", playlist="My Playlist", name="")
-
-        assert "cannot move" in result.lower()
-        assert "allow_duplicates" in result
 
 
 class TestAddToPlaylist:
@@ -647,11 +574,7 @@ class TestAuthTool:
 
     def test_signin_still_waiting(self, monkeypatch):
         import applemusic_mcp.browser as browser
-        from applemusic_mcp import safari
 
-        # Force the Chrome path: Safari harvest fails + Playwright present (signin now
-        # tries Safari first on macOS).
-        monkeypatch.setattr(safari, "media_user_token", lambda: (False, "no safari session"))
         monkeypatch.setattr(browser, "is_available", lambda: True)
         monkeypatch.setattr(browser, "signin_interactive", lambda *a, **k: (False, "still-waiting"))
         out = server.config(action="signin")
@@ -1263,70 +1186,6 @@ class TestPaginationWithFetchExplicit:
     cache for explicit status, only hitting API on cache miss.
     """
 
-    @responses.activate
-    def test_uses_applescript_with_cache_when_fetch_explicit_true(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """With fetch_explicit=True and playlist name, should use AppleScript + cache.
-
-        AppleScript provides fast native access, cache stores explicit status.
-        API is only called on cache miss.
-        """
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-
-        # Setup tokens
-        dev_token_file = mock_config_dir / "developer_token.json"
-        with open(dev_token_file, "w") as f:
-            json.dump({"token": mock_developer_token, "expires": time.time() + 86400 * 60}, f)
-
-        user_token_file = mock_config_dir / "music_user_token.json"
-        with open(user_token_file, "w") as f:
-            json.dump({"music_user_token": mock_user_token}, f)
-
-        # Mock AppleScript - SHOULD be called
-        mock_applescript_called = False
-
-        def mock_asc_get_tracks(*args, **kwargs):
-            nonlocal mock_applescript_called
-            mock_applescript_called = True
-            return (
-                True,
-                [
-                    {"name": f"Track {i}", "artist": "Artist", "album": "Album", "id": f"PID{i}"}
-                    for i in range(5)
-                ],
-                5,
-            )
-
-        # Mock cache - return cached explicit status for all tracks
-        mock_cache = MagicMock()
-        mock_cache.get_explicit.return_value = "Clean"  # All tracks have cached explicit status
-
-        # Resolution falls through to asc.get_playlists() when the name isn't in
-        # the API; stub it so "Test Playlist" resolves natively, offline.
-        monkeypatch.setattr(
-            server.asc, "get_playlists", lambda: (True, [{"name": "Test Playlist", "id": "PLID"}])
-        )
-
-        with patch.object(server.asc, "get_playlist_tracks_page", side_effect=mock_asc_get_tracks):
-            with patch.object(server, "get_track_cache", return_value=mock_cache):
-                # Call with playlist name and fetch_explicit=True
-                result = server.playlist(
-                    action="tracks", playlist="Test Playlist", fetch_explicit=True
-                )
-
-                # Should use AppleScript
-                assert (
-                    mock_applescript_called
-                ), "AppleScript should be called for fast native access"
-
-                # Cache should be checked for each track (via get_explicit)
-                assert mock_cache.get_explicit.call_count == 5
-
-                # Should show all 5 tracks
-                assert "=== 5 tracks ===" in result
-                assert "Track 0" in result
-                assert "Track 4" in result
                 # Note: text format may not display explicit status, but cache was used
 
     @responses.activate
@@ -1535,7 +1394,6 @@ class TestResolvePlaylistApiLookup:
         """Should return playlist ID directly when p. prefix provided."""
         resolved = server._resolve_playlist("p.abc123xyz")
         assert resolved.api_id == "p.abc123xyz"
-        assert resolved.applescript_name is None
         assert resolved.error is None
         assert resolved.raw_input == "p.abc123xyz"
 
@@ -1543,7 +1401,6 @@ class TestResolvePlaylistApiLookup:
         """Should return error for empty playlist string."""
         resolved = server._resolve_playlist("")
         assert resolved.api_id is None
-        assert resolved.applescript_name is None
         assert resolved.error is not None
         assert "required" in resolved.error.lower()
 
@@ -1571,20 +1428,16 @@ class TestResolvePlaylistApiLookup:
 
         resolved = server._resolve_playlist("My Music")
 
-        # Should return BOTH API ID and AppleScript name when match found
+        # A unique API match resolves to its id.
         assert resolved.api_id == "p.found123"
-        assert resolved.applescript_name == "My Music"  # Matched name populated too!
         assert resolved.error is None
         assert resolved.raw_input == "My Music"
 
     @responses.activate
-    def test_falls_back_to_name_when_not_in_api(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
+    def test_reports_error_when_not_in_api(
+        self, mock_config_dir, mock_developer_token, mock_user_token
     ):
-        """Should fall back to playlist name when not found in API."""
-        # API miss → resolution tries native fuzzy match; an empty playlist list
-        # means no match, so it falls back to the raw name (offline).
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, []))
+        """A name the library listing doesn't have is an error, not a silent pass."""
         dev_token_file = mock_config_dir / "developer_token.json"
         with open(dev_token_file, "w") as f:
             json.dump({"token": mock_developer_token, "expires": time.time() + 86400 * 60}, f)
@@ -1602,119 +1455,25 @@ class TestResolvePlaylistApiLookup:
 
         resolved = server._resolve_playlist("Local Only Playlist")
 
-        # Should fall back to name for AppleScript
         assert resolved.api_id is None
-        assert resolved.applescript_name == "Local Only Playlist"
-        assert resolved.error is None
+        assert resolved.error is not None
+        assert "not found" in resolved.error.lower()
 
-    def test_handles_ps_i_love_you_as_name(self, monkeypatch):
+    def test_handles_ps_i_love_you_as_name(self):
         """Should treat 'p.s. I love you' as a name, not an ID."""
         # This tests the edge case where a playlist name starts with "p."
-        # but isn't an ID (has spaces/punctuation after p.)
-        # Empty native playlist list → raw-name fallback, offline.
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, []))
+        # but isn't an ID (has spaces/punctuation after p.).
         with patch.object(server, "_find_api_playlist_by_name", return_value=(None, None)):
             resolved = server._resolve_playlist("p.s. I love you")
 
         # Should be treated as a name, not an ID
         assert resolved.api_id is None
-        assert resolved.applescript_name == "p.s. I love you"
-        assert resolved.error is None
-
-
-class TestResolvePlaylistPrefersExactName:
-    """A fuzzy web-API match must not beat an exact Music.app name. Live: "Music"
-    resolved to the API playlist "New Music", because Music.app's own "Music"
-    playlist isn't in the API listing and the API was asked first, so `playlist
-    copy` copied the wrong playlist."""
-
-    def _setup(self, monkeypatch, api_hit, names):
-        calls = []
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda n: api_hit)
-
-        def get_names():
-            calls.append(1)
-            return names
-
-        monkeypatch.setattr(server.asc, "get_playlist_names", get_names)
-        return calls
-
-    @staticmethod
-    def _partial(matched):
-        return server.FuzzyMatchResult(
-            matched_name=matched,
-            query="Music",
-            normalized_query="music",
-            normalized_match=matched.lower(),
-            transformations=[],
-            match_type="partial",
-        )
-
-    def test_exact_music_app_name_beats_a_partial_api_match(self, monkeypatch):
-        self._setup(
-            monkeypatch, ("p.new", self._partial("New Music")), (True, ["New Music", "Music"])
-        )
-        resolved = server._resolve_playlist("Music")
-
-        assert resolved.applescript_name == "Music"
-        assert resolved.api_id is None
-        assert resolved.fuzzy_match is None
-
-    def test_exact_name_ignores_case(self, monkeypatch):
-        self._setup(monkeypatch, ("p.new", self._partial("New Music")), (True, ["MUSIC"]))
-        assert server._resolve_playlist("music").applescript_name == "MUSIC"
-
-    def test_keeps_the_api_match_when_music_app_has_no_exact_name(self, monkeypatch):
-        self._setup(
-            monkeypatch, ("p.new", self._partial("New Music")), (True, ["New Music", "Musicals"])
-        )
-        resolved = server._resolve_playlist("Music")
-
-        assert resolved.api_id == "p.new"
-        assert resolved.applescript_name == "New Music"
-
-    def test_keeps_the_api_match_when_music_app_cannot_list(self, monkeypatch):
-        self._setup(monkeypatch, ("p.new", self._partial("New Music")), (False, "timed out"))
-        assert server._resolve_playlist("Music").api_id == "p.new"
-
-    def test_two_music_app_playlists_with_the_exact_name_are_refused(self, monkeypatch):
-        """Taking the first could copy the wrong one, and falling back to the
-        loose API match would surely be wrong (cubic, CodeRabbit, PR #82)."""
-        self._setup(
-            monkeypatch, ("p.new", self._partial("New Music")), (True, ["Music", "music"])
-        )
-        resolved = server._resolve_playlist("Music")
-
-        assert resolved.error and "2 playlists" in resolved.error
-        assert resolved.api_id is None and resolved.applescript_name is None
-
-    def test_add_and_its_preview_stop_on_the_duplicate_name_error(self, monkeypatch):
-        self._setup(
-            monkeypatch, ("p.new", self._partial("New Music")), (True, ["Music", "Music"])
-        )
-        monkeypatch.setattr(
-            server.asc, "add_track_to_playlist", lambda *a, **k: pytest.fail("must not write")
-        )
-        assert "2 playlists" in server._playlist_add(playlist="Music", track="Song")
-        assert "2 playlists" in server._playlist_add_preview("Music", "Song")
-
-    def test_an_exact_api_match_skips_music_app(self, monkeypatch):
-        """The common case stays one API listing, with no Apple Event added."""
-        calls = self._setup(monkeypatch, ("p.music", None), (True, ["Music"]))
-        resolved = server._resolve_playlist("Music")
-
-        assert resolved.api_id == "p.music" and calls == []
+        assert resolved.raw_input == "p.s. I love you"
+        assert resolved.error is not None
 
 
 class TestFuzzyMatchingPlaylistResolution:
     """Tests for fuzzy matching playlist names - REGRESSION TESTS."""
-
-    @pytest.fixture(autouse=True)
-    def _no_exact_music_app_name(self, monkeypatch):
-        # A fuzzy API match now checks Music.app for an exact name first; here
-        # Music.app has none, so the API match stands.
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, []))
 
     @responses.activate
     def test_fuzzy_matches_and_vs_ampersand(
@@ -1745,12 +1504,11 @@ class TestFuzzyMatchingPlaylistResolution:
         # User types "Alice and Bob" (with "and" instead of "&")
         resolved = server._resolve_playlist("Alice and Bob")
 
-        # Should fuzzy match and return BOTH identifiers
         assert resolved.api_id == "p.alice123"
-        assert resolved.applescript_name == "Alice & Bob"  # CRITICAL: Must have actual name
         assert resolved.error is None
         assert resolved.raw_input == "Alice and Bob"
         assert resolved.fuzzy_match is not None
+        assert resolved.fuzzy_match.matched_name == "Alice & Bob"
         assert "and" in str(resolved.fuzzy_match.transformations).lower() or "&" in str(
             resolved.fuzzy_match.transformations
         )
@@ -1785,9 +1543,9 @@ class TestFuzzyMatchingPlaylistResolution:
 
         # Should fuzzy match (emojis ignored)
         assert resolved.api_id == "p.emoji123"
-        assert resolved.applescript_name == "🤟👶🎸 Alice & Bob"  # Keep actual emoji name
-        assert resolved.error is None
         assert resolved.fuzzy_match is not None
+        assert resolved.fuzzy_match.matched_name == "🤟👶🎸 Alice & Bob"
+        assert resolved.error is None
 
     @responses.activate
     def test_exact_match_preferred_over_fuzzy(
@@ -1822,18 +1580,13 @@ class TestFuzzyMatchingPlaylistResolution:
 
         # Should choose exact match
         assert resolved.api_id == "p.exact"
-        assert resolved.applescript_name == "Rock Music"
         assert resolved.fuzzy_match is None or resolved.fuzzy_match.match_type == "exact"
 
     @responses.activate
-    def test_resolved_object_has_both_ids_after_fuzzy_match(
+    def test_resolved_object_carries_the_matched_name(
         self, mock_config_dir, mock_developer_token, mock_user_token
     ):
-        """REGRESSION TEST: Resolved object MUST have both api_id and applescript_name after fuzzy match.
-
-        This is the critical fix for the bug where remove_from_playlist("Alice and Bob", ...)
-        would fail because fuzzy matching converted to API ID but function needs AppleScript name.
-        """
+        """A fuzzy match must expose the name it matched, not just the id."""
         dev_token_file = mock_config_dir / "developer_token.json"
         with open(dev_token_file, "w") as f:
             json.dump({"token": mock_developer_token, "expires": time.time() + 86400 * 60}, f)
@@ -1855,13 +1608,9 @@ class TestFuzzyMatchingPlaylistResolution:
 
         resolved = server._resolve_playlist("Test and Playlist")
 
-        # CRITICAL: Both must be populated
-        assert resolved.api_id is not None, "api_id must be populated after fuzzy match"
-        assert (
-            resolved.applescript_name is not None
-        ), "applescript_name must be populated after fuzzy match"
         assert resolved.api_id == "p.test123"
-        assert resolved.applescript_name == "Test & Playlist"
+        assert resolved.fuzzy_match is not None
+        assert resolved.fuzzy_match.matched_name == "Test & Playlist"
 
 
 class TestPlaylistResolutionPerformance:
@@ -1869,7 +1618,7 @@ class TestPlaylistResolutionPerformance:
 
     @responses.activate
     def test_fuzzy_matching_performance_with_many_playlists(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
+        self, mock_config_dir, mock_developer_token, mock_user_token
     ):
         """Should complete fuzzy matching in reasonable time even with many playlists.
 
@@ -1904,7 +1653,6 @@ class TestPlaylistResolutionPerformance:
             status=200,
         )
 
-        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, []))  # no exact twin
         start = time_module.time()
         resolved = server._resolve_playlist("Rock and Roll")  # Fuzzy: "and" → "&"
         elapsed = time_module.time() - start
@@ -1912,8 +1660,8 @@ class TestPlaylistResolutionPerformance:
         # Should complete in under 500ms (fuzzy matching is now fallback-only)
         assert elapsed < 0.5, f"Fuzzy matching took {elapsed:.2f}s, should be < 0.5s"
         assert resolved.api_id == "p.target"
-        assert resolved.applescript_name == "Rock & Roll"
         assert resolved.fuzzy_match is not None, "Should be a fuzzy match"
+        assert resolved.fuzzy_match.matched_name == "Rock & Roll"
 
 
 # =============================================================================
@@ -1925,15 +1673,13 @@ class TestPlaylistResolutionPerformance:
 # - First 10 actions: Regular user
 # - First 20 actions: Power user
 #
-# Each flow is tested in three modes:
-# - API-only: APPLESCRIPT_AVAILABLE = False
-# - macOS-only: AppleScript mocked, preferred for local operations
-# - Combined: Both available, tests routing logic
+# Every flow runs against the Apple Music API: there is no native engine in
+# this build.
 # =============================================================================
 
 
 class TestUserJourneyAPIOnly:
-    """Integration tests for API-only mode (non-macOS or AppleScript unavailable)."""
+    """Integration tests for the API-only build."""
 
     @responses.activate
     def test_first_2_actions_search_and_list_playlists(
@@ -2192,17 +1938,15 @@ class TestUserJourneyAPIOnly:
 
     @responses.activate
     def test_first_10_actions_regular_user(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
+        self, mock_config_dir, mock_developer_token, mock_user_token
     ):
         """Regular user: create playlist, add/remove tracks, get recommendations."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
         self._setup_tokens(mock_config_dir, mock_developer_token, mock_user_token)
 
-        # 6. Create a new playlist. With a dev token, off-macOS create takes the
-        # sanctioned rail (api.music.apple.com), not the grey amp-api host.
+        # 6. Create a new playlist (the web amp-api rail).
         responses.add(
             responses.POST,
-            "https://api.music.apple.com/v1/me/library/playlists",
+            "https://amp-api.music.apple.com/v1/me/library/playlists",
             json={"data": [{"id": "p.new123", "attributes": {"name": "My New Playlist"}}]},
             status=201,
         )
@@ -2524,70 +2268,8 @@ class TestUserJourneyFuzzyMatching:
             json.dump({"music_user_token": mock_user_token}, f)
 
 
-class TestUserJourneyMacOSOnly:
-    """Integration tests for macOS-only mode (AppleScript preferred)."""
-
-    def test_playlist_operations_prefer_applescript(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """On macOS, playlist operations should prefer AppleScript when possible."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        self._setup_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-
-        # Mock AppleScript module
-        mock_asc = MagicMock()
-        mock_asc.get_playlists.return_value = (
-            True,
-            [{"name": "Chill Vibes", "id": "abc123", "count": 25}],
-        )
-        monkeypatch.setattr(server, "asc", mock_asc)
-
-        result = server.playlist(action="list")
-        assert "Chill Vibes" in result
-        mock_asc.get_playlists.assert_called_once()
-
-    def test_remove_from_playlist_uses_applescript_name(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """remove_from_playlist MUST use AppleScript name, not API ID."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        self._setup_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-
-        # Mock AppleScript
-        mock_asc = MagicMock()
-        mock_asc.get_playlists.return_value = (
-            True,
-            [{"name": "🎵 My Mix", "id": "xyz789", "count": 10}],
-        )
-        mock_asc.remove_track_from_playlist.return_value = (True, "Removed")
-        monkeypatch.setattr(server, "asc", mock_asc)
-        mock_asc.get_playlist_names.return_value = (
-            True,
-            [p["name"] for p in mock_asc.get_playlists.return_value[1]],
-        )
-
-        # Resolve playlist with fuzzy name
-        resolved = server._resolve_playlist("My Mix")
-
-        # Critical: applescript_name must be the actual name with emoji
-        assert resolved.applescript_name == "🎵 My Mix"
-        assert resolved.api_id is None or resolved.applescript_name is not None
-
-    def _setup_tokens(self, mock_config_dir, mock_developer_token, mock_user_token):
-        """Helper to setup authentication tokens."""
-        dev_token_file = mock_config_dir / "developer_token.json"
-        with open(dev_token_file, "w") as f:
-            json.dump({"token": mock_developer_token, "expires": time.time() + 86400 * 60}, f)
-
-        user_token_file = mock_config_dir / "music_user_token.json"
-        with open(user_token_file, "w") as f:
-            json.dump({"music_user_token": mock_user_token}, f)
-
-
 class TestApiModeReadRouting:
-    """On macOS, mode=api must skip AppleScript for library reads and use the
-    HTTP API — so a user not signed into Music.app (or signed into a different
-    account there) can stay fully API/browser."""
+    """Library reads and ratings go over the HTTP API, never a local app."""
 
     def _setup_tokens(self, mock_config_dir, mock_developer_token, mock_user_token):
         dev_token_file = mock_config_dir / "developer_token.json"
@@ -2601,13 +2283,8 @@ class TestApiModeReadRouting:
     def test_search_in_api_mode_skips_applescript(
         self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
     ):
-        # AppleScript is present (macOS) but the engine is pinned to api.
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
         monkeypatch.setattr(server, "_engine", lambda: "api")
         self._setup_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-
-        mock_asc = MagicMock()
-        monkeypatch.setattr(server, "asc", mock_asc)
 
         responses.add(
             responses.GET,
@@ -2629,18 +2306,13 @@ class TestApiModeReadRouting:
 
         result = server.library(action="search", query="Money")
         assert "Money" in result
-        mock_asc.search_library_page.assert_not_called()
 
     @responses.activate
     def test_browse_songs_in_api_mode_skips_applescript(
         self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
     ):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
         monkeypatch.setattr(server, "_engine", lambda: "api")
         self._setup_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-
-        mock_asc = MagicMock()
-        monkeypatch.setattr(server, "asc", mock_asc)
 
         responses.add(
             responses.GET,
@@ -2655,19 +2327,13 @@ class TestApiModeReadRouting:
 
         result = server.library(action="browse", item_type="songs", limit=25)
         assert "Time" in result
-        mock_asc.get_library_songs_page.assert_not_called()
-        mock_asc.get_library_songs.assert_not_called()
 
     @responses.activate
     def test_love_by_name_in_api_mode_uses_catalog_rating(
         self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
     ):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
         monkeypatch.setattr(server, "_engine", lambda: "api")
         self._setup_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-
-        mock_asc = MagicMock()
-        monkeypatch.setattr(server, "asc", mock_asc)
 
         responses.add(
             responses.GET,
@@ -2694,33 +2360,13 @@ class TestApiModeReadRouting:
 
         result = server.library(action="rate", rate_action="love", track="Money")
         assert "Money" in result
-        mock_asc.love_track.assert_not_called()
-
-    def test_star_get_refused_without_applescript(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        # Star ratings need AppleScript (macOS), independent of the playback mode.
-        # Off macOS they're refused; on macOS they work regardless of mode.
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
-        self._setup_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-
-        mock_asc = MagicMock()
-        monkeypatch.setattr(server, "asc", mock_asc)
-
-        result = server.library(action="rate", rate_action="get", track="Money")
-        assert "native" in result.lower()
-        mock_asc.get_rating.assert_not_called()
 
     @responses.activate
     def test_remove_in_api_mode_deletes_via_api(
         self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
     ):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
         monkeypatch.setattr(server, "_write_rail", lambda *a, **k: "web")
         self._setup_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-
-        mock_asc = MagicMock()
-        monkeypatch.setattr(server, "asc", mock_asc)
 
         responses.add(
             responses.GET,
@@ -2747,7 +2393,6 @@ class TestApiModeReadRouting:
 
         result = server.library(action="remove", track="Money")
         assert "Removed" in result and "Money" in result
-        mock_asc.remove_from_library.assert_not_called()
 
     @responses.activate
     def test_add_by_ids_in_api_mode(
@@ -2787,10 +2432,8 @@ class TestApiModeReadRouting:
     ):
         """Data-loss guard: a short/common term that substring-matches many
         library songs must delete EXACTLY ONE (exact title preferred), not all."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
         monkeypatch.setattr(server, "_write_rail", lambda *a, **k: "web")
         self._setup_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        monkeypatch.setattr(server, "asc", MagicMock())
 
         # "Love" matches three titles; one is an exact match.
         responses.add(
@@ -2819,7 +2462,7 @@ class TestApiModeReadRouting:
             status=200,
         )
         # Only the exact-title song (i.2) may be deleted.
-        deleted = responses.add(
+        responses.add(
             responses.DELETE,
             "https://amp-api.music.apple.com/v1/me/library/songs/i.2",
             status=204,
@@ -2834,40 +2477,25 @@ class TestApiModeReadRouting:
 
 
 class TestAlbumDisambiguation:
-    """Tests for album param behavior: disambiguation filter when track is present, whole-album add when alone."""
+    """Album param: disambiguation filter when track is present, whole-album add when alone."""
 
     def test_album_without_track_calls_resolve_album(self, monkeypatch):
         """album param alone should call _resolve_album (whole-album add path)."""
         resolve_album_called = False
-        original_resolve = server._resolve_album
 
         def tracking_resolve(*args, **kwargs):
             nonlocal resolve_album_called
             resolve_album_called = True
-            return original_resolve(*args, **kwargs)
+            return []
 
         monkeypatch.setattr(server, "_resolve_album", tracking_resolve)
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
         # Album-add path requires a developer token; mock so the test
         # reaches _resolve_album on systems without a real token (CI).
         monkeypatch.setattr(server, "_has_developer_token", lambda: True)
 
-        mock_asc = MagicMock()
-        mock_asc.get_playlists.return_value = (
-            True,
-            [{"name": "Test Playlist", "id": "test123", "count": 0}],
+        server._playlist_add(
+            playlist="p.test123", album="Some Album", artist="Some Artist"
         )
-        monkeypatch.setattr(server, "asc", mock_asc)
-        mock_asc.get_playlist_names.return_value = (
-            True,
-            [p["name"] for p in mock_asc.get_playlists.return_value[1]],
-        )
-
-        # Will fail at API call, but that's fine — we're just checking _resolve_album was entered
-        try:
-            server._playlist_add(playlist="Test Playlist", album="Some Album", artist="Some Artist")
-        except Exception:
-            pass
 
         assert (
             resolve_album_called
@@ -2876,31 +2504,18 @@ class TestAlbumDisambiguation:
     def test_album_with_track_skips_resolve_album(self, monkeypatch):
         """album + track together should NOT call _resolve_album (disambiguation path instead)."""
         resolve_album_called = False
-        original_resolve = server._resolve_album
 
         def tracking_resolve(*args, **kwargs):
             nonlocal resolve_album_called
             resolve_album_called = True
-            return original_resolve(*args, **kwargs)
+            return []
 
         monkeypatch.setattr(server, "_resolve_album", tracking_resolve)
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-
-        mock_asc = MagicMock()
-        mock_asc.get_playlists.return_value = (
-            True,
-            [{"name": "Test Playlist", "id": "test123", "count": 0}],
-        )
-        mock_asc.track_exists_in_playlist.return_value = (True, False)
-        mock_asc.add_track_to_playlist.return_value = (True, "Added Hot Potato")
-        monkeypatch.setattr(server, "asc", mock_asc)
-        mock_asc.get_playlist_names.return_value = (
-            True,
-            [p["name"] for p in mock_asc.get_playlists.return_value[1]],
-        )
+        monkeypatch.setattr(server, "get_headers", lambda: {})
+        monkeypatch.setattr(server, "_find_track_id", lambda name, artist: (None, None, ""))
 
         server._playlist_add(
-            playlist="Test Playlist",
+            playlist="p.test123",
             track="Hot Potato",
             album="Ready, Steady, Wiggle!",
             artist="The Wiggles",
@@ -2909,191 +2524,6 @@ class TestAlbumDisambiguation:
         assert (
             not resolve_album_called
         ), "_resolve_album should NOT be called when both track and album are provided"
-
-    @responses.activate
-    def test_album_with_track_uses_album_as_filter(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """album + track together should use album as disambiguation, NOT add whole album."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        self._setup_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-
-        mock_asc = MagicMock()
-        mock_asc.get_playlists.return_value = (
-            True,
-            [{"name": "Test Playlist", "id": "test123", "count": 0}],
-        )
-        # First call: pre-add duplicate-check → False (not duplicate, proceed).
-        # Subsequent calls: post-add verification → True (track now in playlist).
-        # The post-add verify catches AppleScript false-positive successes
-        # (some user-created playlists silently revert AppleScript edits
-        # server-side); without the side_effect, mocked verify would always
-        # return False and the post-add verify retry would consume two calls
-        # to add_track_to_playlist instead of one.
-        mock_asc.track_exists_in_playlist.side_effect = [(True, False)] + [(True, True)] * 10
-        mock_asc.add_track_to_playlist.return_value = (
-            True,
-            "Added Hot Potato (Ready, Steady, Wiggle!) by The Wiggles",
-        )
-        monkeypatch.setattr(server, "asc", mock_asc)
-        mock_asc.get_playlist_names.return_value = (
-            True,
-            [p["name"] for p in mock_asc.get_playlists.return_value[1]],
-        )
-
-        result = server._playlist_add(
-            playlist="Test Playlist",
-            track="Hot Potato",
-            album="Ready, Steady, Wiggle!",
-            artist="The Wiggles",
-        )
-
-        # Should add exactly 1 track, not the whole album
-        assert "Added 1 track" in result
-        assert "Hot Potato" in result
-
-        # AppleScript should have been called with album param for disambiguation
-        mock_asc.add_track_to_playlist.assert_called_once()
-        call_args = mock_asc.add_track_to_playlist.call_args
-        # 4th arg (album) should be "Ready, Steady, Wiggle!"
-        assert (
-            call_args[0][3] == "Ready, Steady, Wiggle!"
-            or call_args.kwargs.get("album") == "Ready, Steady, Wiggle!"
-        )
-
-    @responses.activate
-    def test_library_ids_route_to_applescript_for_non_api_playlists(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """Library IDs should use AppleScript mode for non-API playlists, not fail with 403."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        self._setup_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-
-        mock_asc = MagicMock()
-        mock_asc.get_playlists.return_value = (
-            True,
-            [{"name": "My Playlist", "id": "abc123", "count": 10}],
-        )
-        # First call: duplicate-check pre-add → False (not a duplicate, proceed).
-        # Subsequent calls: post-add verification → True (track now in playlist).
-        # The post-add verify was added so AppleScript false-positive successes
-        # (silent `duplicate` no-op when library sync hasn't propagated) get
-        # caught instead of returned to the user as success.
-        mock_asc.track_exists_in_playlist.side_effect = [(True, False)] + [(True, True)] * 10
-        mock_asc.add_track_to_playlist.return_value = (True, "Added Hot Potato by The Wiggles")
-        monkeypatch.setattr(server, "asc", mock_asc)
-        mock_asc.get_playlist_names.return_value = (
-            True,
-            [p["name"] for p in mock_asc.get_playlists.return_value[1]],
-        )
-
-        # Mock library song lookup for the ID
-        responses.add(
-            responses.GET,
-            "https://api.music.apple.com/v1/me/library/songs/i.abc123",
-            json={
-                "data": [
-                    {
-                        "id": "i.abc123",
-                        "attributes": {"name": "Hot Potato", "artistName": "The Wiggles"},
-                    }
-                ]
-            },
-            status=200,
-        )
-
-        result = server._playlist_add(
-            playlist="My Playlist",
-            track="i.abc123",
-        )
-
-        # Should NOT get "Cannot edit this playlist" error
-        assert "Cannot edit" not in result
-        # AppleScript should have been used
-        mock_asc.add_track_to_playlist.assert_called_once()
-
-    def _setup_tokens(self, mock_config_dir, mock_developer_token, mock_user_token):
-        """Helper to setup authentication tokens."""
-        dev_token_file = mock_config_dir / "developer_token.json"
-        with open(dev_token_file, "w") as f:
-            json.dump({"token": mock_developer_token, "expires": time.time() + 86400 * 60}, f)
-
-        user_token_file = mock_config_dir / "music_user_token.json"
-        with open(user_token_file, "w") as f:
-            json.dump({"music_user_token": mock_user_token}, f)
-
-
-class TestUserJourneyCombinedMode:
-    """Integration tests for combined mode (both API and AppleScript available)."""
-
-    @responses.activate
-    def test_add_to_playlist_chooses_best_mode(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """add_to_playlist should use AppleScript for track names, API for IDs."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        self._setup_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-
-        # Mock AppleScript
-        mock_asc = MagicMock()
-        mock_asc.get_playlists.return_value = (
-            True,
-            [{"name": "Workout", "id": "work123", "count": 50}],
-        )
-        mock_asc.track_exists_in_playlist.return_value = (True, False)  # Track doesn't exist yet
-        mock_asc.add_track_to_playlist.return_value = (True, "Added")
-        monkeypatch.setattr(server, "asc", mock_asc)
-
-        # Mock API for playlist resolution
-        responses.add(
-            responses.GET,
-            "https://api.music.apple.com/v1/me/library/playlists",
-            json={"data": [{"id": "p.work", "attributes": {"name": "Workout", "canEdit": True}}]},
-            status=200,
-        )
-
-        # Add track by name - should use AppleScript
-        result = server.playlist(action="add", playlist="Workout", track="Eye of the Tiger")
-
-        # AppleScript should have been called for track name operations
-        # (The exact assertion depends on implementation details)
-
-    def test_playlist_list_does_not_cascade_to_api_on_applescript_failure(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """When AppleScript fails on macOS, _playlist_list must NOT silently
-        cascade to the API. The API path returns a strict subset (only
-        API-visible playlists) and silently swapping views on AS failure
-        masked the real cause and confused users into thinking they needed
-        a developer token. Now the AS error surfaces directly with an
-        actionable message."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-
-        # Tokens configured but should NOT be touched — fallthrough is
-        # blocked.
-        self._setup_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-
-        mock_asc = MagicMock()
-        mock_asc.get_playlists.return_value = (
-            False,
-            "execution error: Music got an error: Not authorized to send Apple events to Music. (-1743)",
-        )
-        # Wire classify_error / error constants through to the real module.
-        from applemusic_mcp import applescript as real_asc
-
-        mock_asc.classify_error = real_asc.classify_error
-        mock_asc.ERROR_UNKNOWN = real_asc.ERROR_UNKNOWN
-        mock_asc.ERROR_AUTOMATION_DENIED = real_asc.ERROR_AUTOMATION_DENIED
-        mock_asc.ERROR_MUSIC_NOT_RUNNING = real_asc.ERROR_MUSIC_NOT_RUNNING
-        mock_asc.ERROR_TIMEOUT = real_asc.ERROR_TIMEOUT
-        mock_asc.ERROR_SYNTAX = real_asc.ERROR_SYNTAX
-        monkeypatch.setattr(server, "asc", mock_asc)
-
-        result = server.playlist(action="list")
-        # Surfaces actionable Automation-denied message
-        assert "Automation permission denied" in result
-        # Does NOT leak the developer-token error
-        assert "Developer token not found" not in result
 
     def _setup_tokens(self, mock_config_dir, mock_developer_token, mock_user_token):
         """Helper to setup authentication tokens."""
@@ -3594,7 +3024,7 @@ class TestDiscoverRecommendationsLimit:
         result = server.discover(action="recommendations", limit=15, format="text")
 
         # Count items in result (rough check - each song should have a line)
-        lines = [l for l in result.split("\n") if l.strip() and not l.startswith("===")]
+        lines = [ln for ln in result.split("\n") if ln.strip() and not ln.startswith("===")]
         # Should have ~15 lines, not 50
         assert len(lines) <= 20  # Allow some buffer for formatting
 
@@ -3646,7 +3076,7 @@ class TestDiscoverRecommendationsLimit:
         result = server.discover(action="recommendations", limit=0, format="text")
 
         # Should have all ~20 items
-        lines = [l for l in result.split("\n") if l.strip() and not l.startswith("===")]
+        lines = [ln for ln in result.split("\n") if ln.strip() and not ln.startswith("===")]
         assert len(lines) >= 7  # At least 7-8 items from the category
 
 
@@ -3675,726 +3105,6 @@ class TestHasDeveloperToken:
         """Token present and valid → True."""
         monkeypatch.setattr(server, "get_developer_token", lambda: "fake_token")
         assert server._has_developer_token() is True
-
-
-class TestSmartAddVerifiesSplitMatch:
-    """Verify _smart_as_add_track_to_playlist re-checks split-resolved adds."""
-
-    def test_split_match_with_verify_passes_returns_success(self, monkeypatch):
-        """Happy path: split candidate adds and verifies → return success."""
-
-        def fake_add(playlist, name, artist, album):
-            if " - " in name and artist is None:
-                return False, "Track not found"
-            return True, f"Added '{name}' to '{playlist}'"
-
-        def fake_verify(playlist, name, artist):
-            return (name, artist) == ("Silvera", "GOJIRA")
-
-        monkeypatch.setattr(server.asc, "add_track_to_playlist", fake_add)
-        monkeypatch.setattr(server, "_verify_track_in_playlist", fake_verify)
-
-        ok, _result, split_match = server._smart_as_add_track_to_playlist(
-            "MyPlaylist", "Silvera - GOJIRA", None, None
-        )
-        assert ok is True
-        assert split_match == ("Silvera", "GOJIRA")
-
-    def test_split_match_verify_failure_does_not_cascade(self, monkeypatch):
-        """First split add succeeds but verify fails → return False with a
-        descriptive error rather than try the next candidate.
-
-        Cascading would risk a second wrong-track add on slow iCloud sync
-        (the 'real' track really did land but verify is just slow). One
-        suspect add is better than two."""
-        add_calls = []
-
-        def fake_add(playlist, name, artist, album):
-            add_calls.append((name, artist))
-            if " - " in name and artist is None:
-                return False, "Track not found"
-            # Both candidates would add OK — but we should never reach the
-            # second one once verify fails on the first.
-            return True, f"Added '{name}' to '{playlist}'"
-
-        def fake_verify(playlist, name, artist):
-            return False  # always fails — simulates slow sync
-
-        monkeypatch.setattr(server.asc, "add_track_to_playlist", fake_add)
-        monkeypatch.setattr(server, "_verify_track_in_playlist", fake_verify)
-
-        ok, result, split_match = server._smart_as_add_track_to_playlist(
-            "MyPlaylist", "Silvera - GOJIRA", None, None
-        )
-        assert ok is False
-        assert split_match is None
-        # Literal attempt + first split candidate only — second candidate
-        # must NOT have been tried (would cascade a second wrong add).
-        assert len(add_calls) == 2
-        assert "could not verify" in result
-
-    def test_first_attempt_success_does_not_verify(self, monkeypatch):
-        """A clean first-attempt add should NOT trigger verification — preserves
-        existing latency profile and behavior for the common path."""
-        verify_called = []
-
-        def fake_add(playlist, name, artist, album):
-            return True, "Added"
-
-        def fake_verify(*args, **kwargs):
-            verify_called.append(args)
-            return False  # would fail if called
-
-        monkeypatch.setattr(server.asc, "add_track_to_playlist", fake_add)
-        monkeypatch.setattr(server, "_verify_track_in_playlist", fake_verify)
-
-        ok, _result, split_match = server._smart_as_add_track_to_playlist(
-            "MyPlaylist", "Some Track", "Some Artist", None
-        )
-        assert ok is True
-        assert split_match is None
-        assert verify_called == []  # verify must NOT run on first-try success
-
-
-class TestAppleScriptPerTrackGuards:
-    """Confirms the per-track try/on error wrap is present in generated scripts.
-
-    These tests don't run AppleScript — they assert on the script string the
-    Python helpers build. That's enough to confirm we deployed the defensive
-    wrap (preventing one broken track from aborting the whole iteration).
-    """
-
-    def test_get_library_songs_script_wraps_per_track(self):
-        """get_library_songs builds a script whose per-track read sits inside try/on error."""
-        from applemusic_mcp import applescript as asc
-
-        captured = {}
-
-        def fake_run(script):
-            captured["script"] = script
-            return True, ""
-
-        with patch.object(asc, "run_applescript", fake_run):
-            asc.get_library_songs(limit=10)
-
-        s = captured["script"]
-        # The skip-comment is a stable marker for the defensive block
-        assert "skip inaccessible tracks" in s
-        # Defensive wrap surrounds the property reads
-        assert s.find("set tName to name of t") > s.find("try")
-
-    def test_get_library_songs_page_script_structure(self):
-        """get_library_songs_page uses count+range access and has defensive try/on error."""
-        from applemusic_mcp import applescript as asc
-
-        captured = {}
-
-        def fake_run(script):
-            captured["script"] = script
-            return True, "total:0\n"
-
-        with patch.object(asc, "run_applescript", fake_run):
-            asc.get_library_songs_page(offset=10, limit=5)
-
-        s = captured["script"]
-        assert "count of tracks" in s
-        assert "items 11 through" in s
-        assert "skip inaccessible tracks" in s
-        assert s.find("set tName to name of t") > s.find("try")
-
-    def test_get_library_songs_page_parses_total_and_tracks(self):
-        """get_library_songs_page parses the total: header line and track rows."""
-        from applemusic_mcp import applescript as asc
-
-        fake_output = "total:42\nAlpha|||Artist A|||Album A|||180.0|||Rock|||2020|||PID1|||false\n"
-
-        with patch.object(asc, "run_applescript", lambda _: (True, fake_output)):
-            success, tracks, total, error = asc.get_library_songs_page(offset=0, limit=10)
-
-        assert success is True
-        assert total == 42
-        assert len(tracks) == 1
-        assert tracks[0]["name"] == "Alpha"
-        assert tracks[0]["id"] == "PID1"
-        assert error == ""
-
-    def test_get_library_songs_page_applescript_error_propagates(self):
-        """get_library_songs_page returns (False, [], 0, error) on AppleScript failure."""
-        from applemusic_mcp import applescript as asc
-
-        with patch.object(asc, "run_applescript", lambda _: (False, "Music not running")):
-            success, tracks, total, error = asc.get_library_songs_page(offset=0, limit=10)
-
-        assert success is False
-        assert tracks == []
-        assert total == 0
-        assert "Music not running" in error
-
-    def test_get_library_songs_page_guards_invalid_applescript_range(self):
-        """get_library_songs_page with limit <= 0 returns error without running AppleScript."""
-        from applemusic_mcp import applescript as asc
-
-        ran = []
-        with patch.object(asc, "run_applescript", lambda _: ran.append(True) or (True, "")):
-            success, tracks, total, error = asc.get_library_songs_page(offset=0, limit=0)
-
-        assert success is False
-        assert tracks == []
-        assert total == 0
-        assert "limit must be > 0" in error
-        assert ran == [], "AppleScript must not run when limit <= 0"
-
-    def test_search_library_page_parses_total_and_slice(self):
-        """search_library_page parses the total: header line and returns the page tracks."""
-        from applemusic_mcp import applescript as asc
-
-        fake_output = "total:42\nAlpha|||Artist A|||Album A|||180.0|||Rock|||2020|||PID1|||false\n"
-        with patch.object(asc, "run_applescript", lambda _: (True, fake_output)):
-            success, tracks, total, error = asc.search_library_page(
-                "alpha", "songs", offset=0, limit=10
-            )
-
-        assert success is True
-        assert total == 42
-        assert len(tracks) == 1
-        assert tracks[0]["name"] == "Alpha"
-        assert tracks[0]["id"] == "PID1"
-        assert error == ""
-
-    def test_search_library_page_script_uses_range_slice(self):
-        """search_library_page slices searchResults by offset/limit (O(limit) range
-        access) instead of always capping at the first 100 hits."""
-        from applemusic_mcp import applescript as asc
-
-        captured = {}
-
-        def fake_run(script):
-            captured["script"] = script
-            return True, "total:0\n"
-
-        with patch.object(asc, "run_applescript", fake_run):
-            asc.search_library_page("query", "songs", offset=10, limit=5)
-
-        s = captured["script"]
-        assert "search library playlist 1 for" in s
-        assert "count of searchResults" in s
-        assert "items 11 through" in s  # offset 10 -> 1-based start 11
-        assert "skip inaccessible tracks" in s
-
-    def test_search_library_page_guards_invalid_limit(self):
-        """search_library_page with limit <= 0 returns an error without running AppleScript."""
-        from applemusic_mcp import applescript as asc
-
-        ran = []
-        with patch.object(asc, "run_applescript", lambda _: ran.append(True) or (True, "")):
-            success, tracks, total, error = asc.search_library_page("q", "songs", offset=0, limit=0)
-
-        assert success is False
-        assert tracks == []
-        assert total == 0
-        assert "limit must be > 0" in error
-        assert ran == [], "AppleScript must not run when limit <= 0"
-
-    def test_search_library_keeps_two_tuple_return(self):
-        """search_library must keep its (success, tracks) shape so the ~6 existing
-        callers that unpack two values don't break."""
-        from applemusic_mcp import applescript as asc
-
-        fake_output = "total:1\nAlpha|||Artist A|||Album A|||180.0|||Rock|||2020|||PID1|||false\n"
-        with patch.object(asc, "run_applescript", lambda _: (True, fake_output)):
-            result = asc.search_library("alpha", "songs")
-
-        assert len(result) == 2, "search_library must stay a 2-tuple"
-        success, tracks = result
-        assert success is True
-        assert tracks[0]["name"] == "Alpha"
-
-    def test_search_library_script_wraps_per_track(self):
-        from applemusic_mcp import applescript as asc
-
-        captured = {}
-
-        def fake_run(script):
-            captured["script"] = script
-            return True, ""
-
-        with patch.object(asc, "run_applescript", fake_run):
-            asc.search_library("anything", "songs")
-
-        s = captured["script"]
-        assert "skip inaccessible tracks" in s
-
-    def test_search_playlist_script_wraps_per_track(self):
-        from applemusic_mcp import applescript as asc
-
-        captured = {}
-
-        def fake_run(script):
-            captured["script"] = script
-            return True, ""
-
-        with patch.object(asc, "run_applescript", fake_run):
-            asc.search_playlist("MyPlaylist", "anything")
-
-        s = captured["script"]
-        assert "skip inaccessible tracks" in s
-
-
-class TestLibrarySearchPagination:
-    """library(action='search') must honor limit and offset on macOS.
-
-    Regression guard: the original AppleScript path called search_library without
-    a limit and never sliced the result, so limit=N was silently ignored and the
-    caller always got up to 100 hits with no way to page past them.
-    """
-
-    @staticmethod
-    def _fake_page_factory(captured, total):
-        def fake_page(query, types, offset=0, limit=100):
-            captured["query"] = query
-            captured["types"] = types
-            captured["offset"] = offset
-            captured["limit"] = limit
-            tracks = [
-                {
-                    "name": f"S{i}",
-                    "artist": "A",
-                    "album": "Al",
-                    "duration": "3:00",
-                    "genre": "R",
-                    "year": "2020",
-                    "id": f"id{offset + i}",
-                    "explicit": "No",
-                }
-                for i in range(limit)
-            ]
-            return True, tracks, total, ""
-
-        return fake_page
-
-    def test_search_forwards_limit_and_offset_to_page(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        captured = {}
-        monkeypatch.setattr(
-            server.asc, "search_library_page", self._fake_page_factory(captured, total=100)
-        )
-
-        server.library(
-            action="search",
-            query="x",
-            types="songs",
-            limit=5,
-            offset=10,
-            fetch_explicit=False,
-            clean_only=False,
-        )
-
-        assert captured["limit"] == 5, "limit must reach the AppleScript page query"
-        assert captured["offset"] == 10, "offset must reach the AppleScript page query"
-
-    def test_search_returns_only_limit_results(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        captured = {}
-        monkeypatch.setattr(
-            server.asc, "search_library_page", self._fake_page_factory(captured, total=100)
-        )
-
-        result = server.library(
-            action="search",
-            query="x",
-            types="songs",
-            limit=5,
-            offset=0,
-            format="json",
-            fetch_explicit=False,
-            clean_only=False,
-        )
-
-        assert len(json.loads(result)) == 5, "limit=5 must yield exactly 5 results, not 100"
-
-    def test_search_shows_pagination_header(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        captured = {}
-        monkeypatch.setattr(
-            server.asc, "search_library_page", self._fake_page_factory(captured, total=100)
-        )
-
-        result = server.library(
-            action="search",
-            query="x",
-            types="songs",
-            limit=5,
-            offset=0,
-            fetch_explicit=False,
-            clean_only=False,
-        )
-
-        assert "of 100" in result, "text output should show total count for paging"
-
-
-class TestLibrarySearchSurfacesAppleScriptError:
-    """When both AS and API fail, the message should expose BOTH causes."""
-
-    def test_token_error_includes_applescript_failure(self, monkeypatch):
-        """If AS fails AND token is missing, surface both — don't pretend the
-        only problem was the token (the original misleading-error class)."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-
-        # AppleScript fails outright
-        def fake_page(query, types, offset=0, limit=100):
-            return False, [], 0, "AppleScript exited with code 1"
-
-        monkeypatch.setattr(server.asc, "search_library_page", fake_page)
-
-        # API path raises the legacy token error
-        def fake_get_headers():
-            raise FileNotFoundError("Developer token not found. Run: applemusic-mcp login --dev")
-
-        monkeypatch.setattr(server, "get_headers", fake_get_headers)
-
-        result = server._library_search("test query")
-        assert "Developer token not found" in result
-        assert "AppleScript also failed" in result
-        assert "AppleScript exited with code 1" in result
-
-    @pytest.mark.usefixtures("mock_config_dir")
-    def test_no_songs_found_includes_applescript_failure(
-        self, monkeypatch, mock_config_dir, mock_developer_token, mock_user_token
-    ):
-        """If AS fails AND API returns zero songs, the user should still see
-        why AS failed — not a bare 'No songs found' that hides the cause."""
-        import responses as resp_lib
-
-        # Configure tokens so the API path actually runs (no FileNotFoundError)
-        dev_token_file = mock_config_dir / "developer_token.json"
-        with open(dev_token_file, "w") as f:
-            json.dump({"token": mock_developer_token, "expires": time.time() + 86400 * 30}, f)
-        user_token_file = mock_config_dir / "music_user_token.json"
-        with open(user_token_file, "w") as f:
-            json.dump({"music_user_token": mock_user_token}, f)
-
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-
-        def fake_page(query, types, offset=0, limit=100):
-            return False, [], 0, "Music app not running"
-
-        monkeypatch.setattr(server.asc, "search_library_page", fake_page)
-
-        with resp_lib.RequestsMock() as r:
-            r.add(
-                resp_lib.GET,
-                f"{server.BASE_URL}/me/library/search",
-                json={"results": {"library-songs": {"data": []}}},
-                status=200,
-            )
-            result = server._library_search("nonexistent track")
-
-        assert "No songs found" in result
-        assert "AppleScript also failed" in result
-        assert "Music app not running" in result
-
-
-class TestClassifyApplescriptError:
-    """Tests for applescript.classify_error pattern matching."""
-
-    def test_automation_denied_by_code(self):
-        from applemusic_mcp import applescript as asc
-
-        text = "execution error: Music got an error: Not authorized to send Apple events to Music. (-1743)"
-        assert asc.classify_error(text) == asc.ERROR_AUTOMATION_DENIED
-
-    def test_automation_denied_by_phrase(self):
-        from applemusic_mcp import applescript as asc
-
-        # Older / variant macOS wording
-        assert (
-            asc.classify_error("Application is not allowed assistive access")
-            == asc.ERROR_AUTOMATION_DENIED
-        )
-
-    def test_music_not_running_by_code_609(self):
-        from applemusic_mcp import applescript as asc
-
-        text = "execution error: Music got an error: Connection is invalid. (-609)"
-        assert asc.classify_error(text) == asc.ERROR_MUSIC_NOT_RUNNING
-
-    def test_music_not_running_by_code_10810(self):
-        from applemusic_mcp import applescript as asc
-
-        text = "Application isn't running. (-10810)"
-        assert asc.classify_error(text) == asc.ERROR_MUSIC_NOT_RUNNING
-
-    def test_music_not_running_by_phrase(self):
-        from applemusic_mcp import applescript as asc
-
-        assert asc.classify_error('Can\'t get application "Music"') == asc.ERROR_MUSIC_NOT_RUNNING
-
-    def test_timeout(self):
-        from applemusic_mcp import applescript as asc
-
-        # The exact message run_applescript emits on subprocess.TimeoutExpired
-        assert asc.classify_error("AppleScript timed out after 30 seconds") == asc.ERROR_TIMEOUT
-
-    def test_syntax_error(self):
-        from applemusic_mcp import applescript as asc
-
-        assert asc.classify_error("syntax error in line 3") == asc.ERROR_SYNTAX
-
-    def test_unknown_for_logic_errors(self):
-        """App-logic errors (track not found, playlist empty, etc.) classify as
-        unknown so callers can still cascade to the API for legitimate
-        fallbacks."""
-        from applemusic_mcp import applescript as asc
-
-        assert asc.classify_error("Track 'X' not found in library") == asc.ERROR_UNKNOWN
-        assert asc.classify_error("ERROR:Playlist is empty") == asc.ERROR_UNKNOWN
-
-    def test_unknown_for_empty(self):
-        from applemusic_mcp import applescript as asc
-
-        assert asc.classify_error("") == asc.ERROR_UNKNOWN
-
-
-class TestFormatApplescriptError:
-    """Tests for _format_applescript_error user-facing messages."""
-
-    def test_music_not_running_message(self):
-        msg = server._format_applescript_error("Connection is invalid (-609)", "create playlist")
-        assert "Music.app isn't running" in msg
-        assert "create playlist" in msg
-        assert "Open Music.app" in msg
-
-    def test_automation_denied_message(self):
-        msg = server._format_applescript_error(
-            "Not authorized to send Apple events to Music. (-1743)", "list playlists"
-        )
-        assert "Automation permission denied" in msg
-        assert "list playlists" in msg
-        assert "System Settings" in msg
-        assert "Music" in msg  # mentions enabling the Music toggle
-
-    def test_timeout_message(self):
-        msg = server._format_applescript_error(
-            "AppleScript timed out after 30 seconds", "rate track"
-        )
-        assert "timed out" in msg
-        assert "unresponsive" in msg
-
-    def test_unknown_includes_raw(self):
-        """Unknown errors fall through to raw display so users can report them."""
-        msg = server._format_applescript_error("some weird error", "some op")
-        assert "some weird error" in msg
-        assert "some op" in msg
-
-    def test_no_operation_context(self):
-        """Operation context is optional — no parens when not provided."""
-        msg = server._format_applescript_error("Connection is invalid (-609)")
-        assert "Music.app isn't running" in msg
-        # No empty-parens artifact like "isn't running ()."
-        assert "()" not in msg
-
-
-class TestPlaylistCreateNoTokenLeakOnAsFailure:
-    """Regression test for the Reddit-reported bug — _playlist_create must
-    NOT cascade to the API path on macOS when AS fails. Otherwise a
-    tokenless macOS user trying to create a playlist (the README-promised
-    happy path) sees 'Developer token not found' when their actual problem
-    is Music.app not running."""
-
-    def test_music_not_running_does_not_leak_token_error(self, monkeypatch):
-        from applemusic_mcp import applescript as real_asc
-
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-
-        mock_asc = MagicMock()
-        mock_asc.create_playlist.return_value = (
-            False,
-            "execution error: Music got an error: Connection is invalid. (-609)",
-        )
-        mock_asc.classify_error = real_asc.classify_error
-        mock_asc.ERROR_UNKNOWN = real_asc.ERROR_UNKNOWN
-        mock_asc.ERROR_AUTOMATION_DENIED = real_asc.ERROR_AUTOMATION_DENIED
-        mock_asc.ERROR_MUSIC_NOT_RUNNING = real_asc.ERROR_MUSIC_NOT_RUNNING
-        mock_asc.ERROR_TIMEOUT = real_asc.ERROR_TIMEOUT
-        mock_asc.ERROR_SYNTAX = real_asc.ERROR_SYNTAX
-        monkeypatch.setattr(server, "asc", mock_asc)
-
-        # Token deliberately not configured — if cascade leaks, this is
-        # the error the user would see.
-        def raise_no_token():
-            raise FileNotFoundError("Developer token not found. Run: applemusic-mcp login --dev")
-
-        monkeypatch.setattr(server, "get_headers", raise_no_token)
-
-        result = server._playlist_create("My New Playlist")
-
-        assert "Music.app isn't running" in result
-        assert "Developer token not found" not in result
-        assert "login --dev" not in result
-
-    def test_automation_denied_surfaces_actionable_message(self, monkeypatch):
-        from applemusic_mcp import applescript as real_asc
-
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-
-        mock_asc = MagicMock()
-        mock_asc.create_playlist.return_value = (
-            False,
-            "Not authorized to send Apple events to Music. (-1743)",
-        )
-        mock_asc.classify_error = real_asc.classify_error
-        mock_asc.ERROR_UNKNOWN = real_asc.ERROR_UNKNOWN
-        mock_asc.ERROR_AUTOMATION_DENIED = real_asc.ERROR_AUTOMATION_DENIED
-        mock_asc.ERROR_MUSIC_NOT_RUNNING = real_asc.ERROR_MUSIC_NOT_RUNNING
-        mock_asc.ERROR_TIMEOUT = real_asc.ERROR_TIMEOUT
-        mock_asc.ERROR_SYNTAX = real_asc.ERROR_SYNTAX
-        monkeypatch.setattr(server, "asc", mock_asc)
-
-        result = server._playlist_create("Whatever")
-        assert "Automation permission denied" in result
-        assert "System Settings" in result
-        assert "Developer token not found" not in result
-
-    def test_applescript_success_returns_normally(self, monkeypatch):
-        """Sanity: the happy path still works — AS create succeeds, function returns ID."""
-        from applemusic_mcp import applescript as real_asc
-
-        monkeypatch.setattr(server, "AppLESCRIPT_AVAILABLE", True) if False else None
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-
-        mock_asc = MagicMock()
-        mock_asc.create_playlist.return_value = (True, "p.123abc")
-        mock_asc.classify_error = real_asc.classify_error
-        monkeypatch.setattr(server, "asc", mock_asc)
-
-        result = server._playlist_create("My Playlist")
-        assert "Created playlist 'My Playlist'" in result
-        assert "p.123abc" in result
-
-
-class TestLibraryRateGatedFallthrough:
-    """_library_rate has a legitimate API fallback for catalog songs not in
-    the local library, so it uses gated fallthrough — environmental AS
-    errors surface; logic AS errors (track not found) cascade to API.
-
-    These tests use the public ``rating`` MCP tool to exercise the full
-    code path including _resolve_track, which simplifies setup."""
-
-    def test_environmental_error_blocks_cascade(self, monkeypatch):
-        from applemusic_mcp import applescript as real_asc
-
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-
-        mock_asc = MagicMock()
-        mock_asc.love_track.return_value = (False, "Not authorized (-1743)")
-        mock_asc.classify_error = real_asc.classify_error
-        mock_asc.ERROR_UNKNOWN = real_asc.ERROR_UNKNOWN
-        mock_asc.ERROR_AUTOMATION_DENIED = real_asc.ERROR_AUTOMATION_DENIED
-        mock_asc.ERROR_MUSIC_NOT_RUNNING = real_asc.ERROR_MUSIC_NOT_RUNNING
-        mock_asc.ERROR_TIMEOUT = real_asc.ERROR_TIMEOUT
-        mock_asc.ERROR_SYNTAX = real_asc.ERROR_SYNTAX
-        monkeypatch.setattr(server, "asc", mock_asc)
-
-        # If cascade happened, _search_catalog_songs would be called.
-        def fail_if_called(*args, **kwargs):
-            raise AssertionError("Cascade to API should have been blocked")
-
-        monkeypatch.setattr(server, "_search_catalog_songs", fail_if_called)
-
-        result = server._library_rate(
-            action="love", track="Some Track", artist="Some Artist", stars=0
-        )
-        assert "Automation permission denied" in result
-
-    def test_logic_error_allows_cascade(self, monkeypatch):
-        """When AS fails with a non-environmental error (e.g. track not
-        in library), cascade to API is allowed."""
-        from applemusic_mcp import applescript as real_asc
-
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-
-        mock_asc = MagicMock()
-        mock_asc.love_track.return_value = (False, "Track 'X' not found in library")
-        mock_asc.classify_error = real_asc.classify_error
-        mock_asc.ERROR_UNKNOWN = real_asc.ERROR_UNKNOWN
-        mock_asc.ERROR_AUTOMATION_DENIED = real_asc.ERROR_AUTOMATION_DENIED
-        mock_asc.ERROR_MUSIC_NOT_RUNNING = real_asc.ERROR_MUSIC_NOT_RUNNING
-        mock_asc.ERROR_TIMEOUT = real_asc.ERROR_TIMEOUT
-        mock_asc.ERROR_SYNTAX = real_asc.ERROR_SYNTAX
-        monkeypatch.setattr(server, "asc", mock_asc)
-
-        cascade_called = []
-
-        def mock_catalog_search(*args, **kwargs):
-            cascade_called.append(True)
-            return []  # No results — falls through cleanly
-
-        monkeypatch.setattr(server, "_search_catalog_songs", mock_catalog_search)
-
-        server._library_rate(action="love", track="Some Track", artist="Some Artist", stars=0)
-        assert cascade_called, "Cascade to API should have happened on logic-level AS error"
-
-
-class TestLibraryBrowseNoTokenLeakOnAsFailure:
-    """Regression test for the reviewer-flagged callsite. _library_browse
-    is `library(action="browse")` — same shape as _playlist_list.
-    AppleScript failure on macOS must NOT cascade to the API path and
-    leak the token error."""
-
-    def test_music_not_running_does_not_leak_token_error(self, monkeypatch):
-        from applemusic_mcp import applescript as real_asc
-
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-
-        mock_asc = MagicMock()
-        mock_asc.get_library_songs_page.return_value = (
-            False,
-            [],
-            0,
-            "execution error: Music got an error: Connection is invalid. (-609)",
-        )
-        mock_asc.classify_error = real_asc.classify_error
-        mock_asc.ERROR_UNKNOWN = real_asc.ERROR_UNKNOWN
-        mock_asc.ERROR_AUTOMATION_DENIED = real_asc.ERROR_AUTOMATION_DENIED
-        mock_asc.ERROR_MUSIC_NOT_RUNNING = real_asc.ERROR_MUSIC_NOT_RUNNING
-        mock_asc.ERROR_TIMEOUT = real_asc.ERROR_TIMEOUT
-        mock_asc.ERROR_SYNTAX = real_asc.ERROR_SYNTAX
-        monkeypatch.setattr(server, "asc", mock_asc)
-
-        # Token NOT configured. If cascade leaks, this is what the user sees.
-        def raise_no_token():
-            raise FileNotFoundError("Developer token not found. Run: applemusic-mcp login --dev")
-
-        monkeypatch.setattr(server, "get_headers", raise_no_token)
-
-        result = server._library_browse(item_type="songs")
-        assert "Music.app isn't running" in result
-        assert "Developer token not found" not in result
-
-    def test_automation_denied_surfaces_actionable(self, monkeypatch):
-        from applemusic_mcp import applescript as real_asc
-
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-
-        mock_asc = MagicMock()
-        mock_asc.get_library_songs_page.return_value = (
-            False,
-            [],
-            0,
-            "Not authorized to send Apple events to Music. (-1743)",
-        )
-        mock_asc.classify_error = real_asc.classify_error
-        mock_asc.ERROR_UNKNOWN = real_asc.ERROR_UNKNOWN
-        mock_asc.ERROR_AUTOMATION_DENIED = real_asc.ERROR_AUTOMATION_DENIED
-        mock_asc.ERROR_MUSIC_NOT_RUNNING = real_asc.ERROR_MUSIC_NOT_RUNNING
-        mock_asc.ERROR_TIMEOUT = real_asc.ERROR_TIMEOUT
-        mock_asc.ERROR_SYNTAX = real_asc.ERROR_SYNTAX
-        monkeypatch.setattr(server, "asc", mock_asc)
-
-        result = server._library_browse(item_type="songs")
-        assert "Automation permission denied" in result
-        assert "System Settings" in result
-        assert "Developer token not found" not in result
 
 
 class TestResolveTrackBatch:
@@ -4434,450 +3144,6 @@ class TestResolveTrackBatch:
         results = server._resolve_track("Yesterday")
         assert len(results) == 1
         assert results[0].value == "Yesterday"
-
-
-class TestLibraryFavorites:
-    """library(action="favorites") lists loved (Favorite) songs via the
-    AppleScript `whose loved is true` filter."""
-
-    def _loved_songs(self):
-        return [
-            {
-                "name": "Loved One",
-                "artist": "Artist A",
-                "album": "Album A",
-                "duration": "3:21",
-                "genre": "Pop",
-                "year": "2020",
-                "id": "loved1",
-                "explicit": "No",
-            },
-            {
-                "name": "Loved Two",
-                "artist": "Artist B",
-                "album": "Album B",
-                "duration": "4:05",
-                "genre": "Rock",
-                "year": "2021",
-                "id": "loved2",
-                "explicit": "No",
-            },
-        ]
-
-    def test_lists_loved_songs(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        mock_asc = MagicMock()
-        mock_asc.get_loved_songs.return_value = (True, self._loved_songs())
-        monkeypatch.setattr(server, "asc", mock_asc)
-
-        result = server.library(action="favorites")
-        assert "Loved One" in result
-        assert "Loved Two" in result
-        mock_asc.get_loved_songs.assert_called_once()
-
-    def test_loved_alias(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        mock_asc = MagicMock()
-        mock_asc.get_loved_songs.return_value = (True, self._loved_songs())
-        monkeypatch.setattr(server, "asc", mock_asc)
-
-        result = server.library(action="loved")
-        assert "Loved One" in result
-
-    def test_empty_library(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        mock_asc = MagicMock()
-        mock_asc.get_loved_songs.return_value = (True, [])
-        monkeypatch.setattr(server, "asc", mock_asc)
-
-        result = server.library(action="favorites")
-        assert "No favorite songs" in result
-
-    def test_requires_macos(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
-        result = server.library(action="favorites")
-        assert "requires macOS" in result
-
-    def test_applescript_failure_surfaces_actionable(self, monkeypatch):
-        from applemusic_mcp import applescript as real_asc
-
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        mock_asc = MagicMock()
-        mock_asc.get_loved_songs.return_value = (
-            False,
-            "execution error: Music got an error: Connection is invalid. (-609)",
-        )
-        mock_asc.classify_error = real_asc.classify_error
-        mock_asc.ERROR_UNKNOWN = real_asc.ERROR_UNKNOWN
-        mock_asc.ERROR_AUTOMATION_DENIED = real_asc.ERROR_AUTOMATION_DENIED
-        mock_asc.ERROR_MUSIC_NOT_RUNNING = real_asc.ERROR_MUSIC_NOT_RUNNING
-        mock_asc.ERROR_TIMEOUT = real_asc.ERROR_TIMEOUT
-        mock_asc.ERROR_SYNTAX = real_asc.ERROR_SYNTAX
-        monkeypatch.setattr(server, "asc", mock_asc)
-
-        result = server.library(action="favorites")
-        assert "Music.app isn't running" in result
-
-
-class TestNotAllowedOvermatchFix:
-    """Reviewer flagged that bare 'not allowed' was promoting Music.app
-    logic-level errors (e.g. 'editing not allowed for smart playlist')
-    to ERROR_AUTOMATION_DENIED, which would block legitimate API
-    cascade in _library_rate. Verify the tightened phrase matching."""
-
-    def test_smart_playlist_not_allowed_classifies_as_unknown(self):
-        from applemusic_mcp import applescript as asc
-
-        # This is a Music.app logic error, NOT an Automation denial.
-        # It should classify as UNKNOWN so callers cascade as appropriate.
-        assert asc.classify_error("operation not allowed on smart playlists") == asc.ERROR_UNKNOWN
-        assert asc.classify_error("editing not allowed for this playlist") == asc.ERROR_UNKNOWN
-
-    def test_full_assistive_phrase_still_classifies_as_automation_denied(self):
-        from applemusic_mcp import applescript as asc
-
-        # The actual -1743 phrase variant should still match.
-        assert (
-            asc.classify_error("Application is not allowed assistive access")
-            == asc.ERROR_AUTOMATION_DENIED
-        )
-        assert (
-            asc.classify_error("requires assistive access to control Music")
-            == asc.ERROR_AUTOMATION_DENIED
-        )
-
-
-class TestPlaylistAddIdsRequireToken:
-    """When a tokenless macOS user passes a track ID (not name) to
-    playlist(action="add"), the AS-mode code path needs the API to
-    resolve the ID's metadata before handing off to AppleScript. Prior
-    to the fix, _playlist_add called get_headers() unconditionally inside
-    the AS block — leaking 'Developer token not found' on the same
-    user-facing surface as the bug this PR exists to close."""
-
-    def test_id_without_token_says_what_to_do_not_dev_token(self, monkeypatch):
-        from applemusic_mcp import applescript as real_asc
-
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-
-        # Set up: AS resolves the playlist by name, no tokens configured
-        mock_asc = MagicMock()
-        mock_asc.get_playlists.return_value = (
-            True,
-            [{"name": "Workout", "id": "p.work", "smart": False, "track_count": 5}],
-        )
-        # track_exists_in_playlist for dedup check (won't matter — we
-        # should bail before reaching it)
-        mock_asc.track_exists_in_playlist.return_value = (True, False)
-        mock_asc.classify_error = real_asc.classify_error
-        monkeypatch.setattr(server, "asc", mock_asc)
-        mock_asc.get_playlist_names.return_value = (
-            True,
-            [p["name"] for p in mock_asc.get_playlists.return_value[1]],
-        )
-
-        # No token configured — _has_developer_token returns False,
-        # which the new ID-guard catches and surfaces a specific message.
-        monkeypatch.setattr(server, "_has_developer_token", lambda: False)
-
-        # If the guard didn't fire, this would raise the misleading
-        # FileNotFoundError. Patch get_headers to fail loudly so the
-        # test catches a regression.
-        def fail_loud():
-            raise AssertionError(
-                "get_headers() should not have been called — the ID guard "
-                "must intercept before this point"
-            )
-
-        monkeypatch.setattr(server, "get_headers", fail_loud)
-
-        result = server._playlist_add(
-            playlist="Workout",
-            track="1440783617",  # catalog ID format
-            album="",
-            artist="",
-            allow_duplicates=False,
-            verify=False,
-            auto_add=False,
-        )
-
-        assert "Track IDs require an API token" in result
-        assert "pass the track by name instead" in result
-        # The legacy misleading error must NOT appear
-        assert "Developer token not found" not in result.split("Track IDs")[0]
-
-    def test_album_without_token_does_not_leak_dev_token_error(self, monkeypatch):
-        """Adding by album also requires the catalog API (album's tracklist is
-        fetched there). On tokenless macOS, _playlist_add must surface a
-        specific 'add by album requires API' message — not 'Developer token
-        not found'. Reviewer-flagged sibling of the ID guard."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-
-        mock_asc = MagicMock()
-        mock_asc.get_playlists.return_value = (
-            True,
-            [{"name": "Workout", "id": "p.work", "smart": False, "track_count": 0}],
-        )
-        monkeypatch.setattr(server, "asc", mock_asc)
-        mock_asc.get_playlist_names.return_value = (
-            True,
-            [p["name"] for p in mock_asc.get_playlists.return_value[1]],
-        )
-        monkeypatch.setattr(server, "_has_developer_token", lambda: False)
-
-        # If we reach get_headers, the guard didn't fire.
-        def fail_loud():
-            raise AssertionError(
-                "get_headers() should not have been called — the album guard "
-                "must intercept before this point"
-            )
-
-        monkeypatch.setattr(server, "get_headers", fail_loud)
-
-        result = server._playlist_add(
-            playlist="Workout",
-            track="",
-            album="Dark Side of the Moon",
-            artist="",
-            allow_duplicates=False,
-            verify=False,
-            auto_add=False,
-        )
-
-        assert "Adding by album requires an API token" in result
-        assert "Developer token not found" not in result
-
-
-class TestPlaylistCopyNoTokenLeakOnAsFailure:
-    """Regression test for _playlist_copy AS-mode (by-name path). The fix
-    in cdc3e40 deferred get_headers() from the function preamble to inside
-    the API-mode (by-ID) branch only — without a regression test, a
-    future refactor could re-introduce the upfront get_headers() call
-    silently, leaking 'Developer token not found' to tokenless macOS
-    users copying playlists by name.
-
-    Reviewer-flagged gap (TestPlaylistCopyNoTokenLeakOnAsFailure was
-    missing; all other fixed callsites had regression tests)."""
-
-    @staticmethod
-    def _wire_error_constants(mock_asc, real_asc):
-        """Helper: replicate the error category attributes on a MagicMock
-        so server-side `asc.ERROR_*` lookups resolve to the real strings,
-        not auto-generated MagicMock instances. Without this, the
-        category-equality checks inside `_format_applescript_error` and
-        the gated-cascade in `_library_rate` always evaluate False."""
-        mock_asc.classify_error = real_asc.classify_error
-        mock_asc.ERROR_UNKNOWN = real_asc.ERROR_UNKNOWN
-        mock_asc.ERROR_AUTOMATION_DENIED = real_asc.ERROR_AUTOMATION_DENIED
-        mock_asc.ERROR_MUSIC_NOT_RUNNING = real_asc.ERROR_MUSIC_NOT_RUNNING
-        mock_asc.ERROR_TIMEOUT = real_asc.ERROR_TIMEOUT
-        mock_asc.ERROR_SYNTAX = real_asc.ERROR_SYNTAX
-
-    def test_as_mode_by_name_does_not_call_get_headers(self, monkeypatch):
-        from applemusic_mcp import applescript as real_asc
-
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-
-        mock_asc = MagicMock()
-        mock_asc.get_playlists.return_value = (
-            True,
-            [{"name": "Source Playlist", "id": "src.id", "smart": False, "track_count": 3}],
-        )
-        # AS read of the source's size succeeds: one track
-        mock_asc.get_playlist_tracks_page.return_value = (
-            True,
-            [{"name": "Track 1", "artist": "Artist 1", "album": "Album 1", "id": "t.1"}],
-            1,
-        )
-        mock_asc.get_playlist_persistent_id.return_value = (True, "SRCPERSIST")
-        # AS create of destination succeeds
-        mock_asc.create_playlist.return_value = (True, "p.dest")
-        # AS copy of the tracks succeeds
-        mock_asc.copy_playlist_tracks.return_value = (True, (1, 1, []))
-        self._wire_error_constants(mock_asc, real_asc)
-        monkeypatch.setattr(server, "asc", mock_asc)
-        mock_asc.get_playlist_names.return_value = (
-            True,
-            [p["name"] for p in mock_asc.get_playlists.return_value[1]],
-        )
-
-        # If get_headers is reached, the regression has happened.
-        def fail_loud():
-            raise AssertionError(
-                "get_headers() should NOT be called on the AS-by-name copy path — "
-                "v0.9.4 deferred it to API-mode (by-ID) only"
-            )
-
-        monkeypatch.setattr(server, "get_headers", fail_loud)
-
-        # Tokenless invocation by name (no token configured, AS-mode)
-        result = server._playlist_copy(source="Source Playlist", new_name="Destination")
-
-        assert "Created" in result and "Destination" in result
-        assert "Developer token not found" not in result
-
-    def test_as_mode_failure_surfaces_formatted_error(self, monkeypatch):
-        """When AS fails inside copy on macOS, surface the formatted error
-        (Music.app isn't running, Automation denied, etc.) — not a raw
-        stderr or a token error."""
-        from applemusic_mcp import applescript as real_asc
-
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-
-        mock_asc = MagicMock()
-        mock_asc.get_playlists.return_value = (
-            True,
-            [{"name": "Source Playlist", "id": "src.id", "smart": False, "track_count": 3}],
-        )
-        # AS read of source tracks fails environmentally
-        mock_asc.get_playlist_tracks_page.return_value = (
-            False,
-            "execution error: Music got an error: Connection is invalid. (-609)",
-            0,
-        )
-        self._wire_error_constants(mock_asc, real_asc)
-        monkeypatch.setattr(server, "asc", mock_asc)
-        mock_asc.get_playlist_names.return_value = (
-            True,
-            [p["name"] for p in mock_asc.get_playlists.return_value[1]],
-        )
-
-        def fail_loud():
-            raise AssertionError("get_headers() reached — should have early-returned")
-
-        monkeypatch.setattr(server, "get_headers", fail_loud)
-
-        result = server._playlist_copy(source="Source Playlist", new_name="Destination")
-        assert "Music.app isn't running" in result
-        assert "Developer token not found" not in result
-
-
-class TestLibrarySearchEmptyDoesNotLeakToken:
-    """Regression test for the bug horrorshow75 hit on Reddit after v0.9.4
-    shipped. _library_search's AS path treats `(True, [])` (empty success)
-    differently from `(True, [results])` — the early-return guard was
-    `if success and results:`, which fails on empty lists and falls
-    through to the API path. On tokenless macOS, that path then leaks
-    'Developer token not found' even though the truth was just 'song's
-    not in your library'. v0.9.4 missed this case because the prior
-    sweeps focused on AS-FAILURE paths, not AS-empty-SUCCESS paths."""
-
-    def test_tokenless_macos_empty_as_returns_no_results_not_token_error(self, monkeypatch):
-        from applemusic_mcp import applescript as real_asc
-
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-
-        mock_asc = MagicMock()
-        # AS search succeeds but returns zero hits (song not in library)
-        mock_asc.search_library_page.return_value = (True, [], 0, "")
-        mock_asc.classify_error = real_asc.classify_error
-        mock_asc.ERROR_UNKNOWN = real_asc.ERROR_UNKNOWN
-        mock_asc.ERROR_AUTOMATION_DENIED = real_asc.ERROR_AUTOMATION_DENIED
-        mock_asc.ERROR_MUSIC_NOT_RUNNING = real_asc.ERROR_MUSIC_NOT_RUNNING
-        mock_asc.ERROR_TIMEOUT = real_asc.ERROR_TIMEOUT
-        mock_asc.ERROR_SYNTAX = real_asc.ERROR_SYNTAX
-        monkeypatch.setattr(server, "asc", mock_asc)
-
-        # No token configured. If cascade fires, this is the misleading error.
-        monkeypatch.setattr(server, "_has_developer_token", lambda: False)
-
-        # If get_headers reaches the API, the regression has happened.
-        def fail_loud():
-            raise AssertionError(
-                "get_headers() should not be called — empty AS result on "
-                "tokenless macOS must short-circuit to 'No songs found'"
-            )
-
-        monkeypatch.setattr(server, "get_headers", fail_loud)
-
-        result = server._library_search("nonexistent track xyz")
-        assert "No songs found" in result
-        # The leak-error must NOT appear
-        assert "Developer token not found" not in result
-        assert "applemusic-mcp login --dev" not in result
-        assert "applemusic-mcp login --dev" not in result
-
-    def test_tokenful_macos_empty_as_still_cascades_for_cloud_check(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """When a token IS configured, empty AS results still cascade to API
-        — the API may see cloud-synced tracks AS hasn't seen yet. This is
-        the legitimate use case the cascade was originally designed for."""
-        import responses as resp_lib
-
-        # Configure tokens
-        dev_token_file = mock_config_dir / "developer_token.json"
-        with open(dev_token_file, "w") as f:
-            json.dump({"token": mock_developer_token, "expires": time.time() + 86400 * 30}, f)
-        user_token_file = mock_config_dir / "music_user_token.json"
-        with open(user_token_file, "w") as f:
-            json.dump({"music_user_token": mock_user_token}, f)
-
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-
-        mock_asc = MagicMock()
-        mock_asc.search_library_page.return_value = (True, [], 0, "")  # AS empty
-        from applemusic_mcp import applescript as real_asc
-
-        mock_asc.classify_error = real_asc.classify_error
-        monkeypatch.setattr(server, "asc", mock_asc)
-
-        with resp_lib.RequestsMock() as r:
-            r.add(
-                resp_lib.GET,
-                f"{server.BASE_URL}/me/library/search",
-                json={
-                    "results": {
-                        "library-songs": {
-                            "data": [
-                                {
-                                    "id": "i.cloud123",
-                                    "attributes": {
-                                        "name": "Cloud Track",
-                                        "artistName": "Cloud Artist",
-                                        "albumName": "Cloud Album",
-                                    },
-                                }
-                            ]
-                        }
-                    }
-                },
-                status=200,
-            )
-            result = server._library_search("cloud track")
-
-        # API was reached and surfaced the cloud-synced result
-        assert "Cloud Track" in result
-
-    def test_tokenless_macos_empty_as_message_uses_types_param(self, monkeypatch):
-        """The 'No <types> found in library' message respects the types arg."""
-        from applemusic_mcp import applescript as real_asc
-
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        mock_asc = MagicMock()
-        mock_asc.search_library_page.return_value = (True, [], 0, "")
-        mock_asc.classify_error = real_asc.classify_error
-        monkeypatch.setattr(server, "asc", mock_asc)
-        monkeypatch.setattr(server, "_has_developer_token", lambda: False)
-
-        result = server._library_search("nonexistent", types="albums")
-        assert "No albums found" in result
-
-    def test_tokenless_macos_empty_hint_routes_to_catalog(self, monkeypatch):
-        """The empty-result message must hint at catalog(action='search')
-        — without this, Claude sessions reading 'No songs found in library'
-        don't know to try catalog and the user gets stuck."""
-        from applemusic_mcp import applescript as real_asc
-
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        mock_asc = MagicMock()
-        mock_asc.search_library_page.return_value = (True, [], 0, "")
-        mock_asc.classify_error = real_asc.classify_error
-        monkeypatch.setattr(server, "asc", mock_asc)
-        monkeypatch.setattr(server, "_has_developer_token", lambda: False)
-
-        result = server._library_search("anything")
-        assert "catalog(action='search'" in result
 
 
 class TestApplyPagination:
@@ -4936,11 +3202,10 @@ class TestApplyPagination:
 
 
 class TestLibraryBrowsePagination:
-    """Tests for offset/limit pagination in _library_browse.
+    """Tests for offset/limit pagination in _library_browse over the API.
 
-    Covers both the AppleScript path (macOS, item_type=songs) and the API
-    path (APPLESCRIPT_AVAILABLE=False), for three basic scenarios each:
-    first page, second page (non-zero offset), and fetch-all (limit=0).
+    Three basic scenarios: first page, second page (non-zero offset), and
+    fetch-all (limit=0).
     """
 
     def _setup_tokens(self, mock_config_dir, mock_developer_token, mock_user_token):
@@ -4966,60 +3231,6 @@ class TestLibraryBrowsePagination:
         return {"name": f"Track {i}", "artist": "Artist", "album": "Album", "id": f"PID{i}"}
 
     # ── AppleScript path ──────────────────────────────────────────────────────
-
-    def test_applescript_offset_zero_limit_ten_returns_first_page(self, monkeypatch):
-        """offset=0, limit=10: calls get_library_songs_page(0, 10) and returns page."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        mock_asc = MagicMock()
-        mock_asc.get_library_songs_page.return_value = (
-            True,
-            [self._make_as_song(i) for i in range(10)],
-            100,
-            "",
-        )
-        monkeypatch.setattr(server, "asc", mock_asc)
-
-        result = server._library_browse(item_type="songs", limit=10, offset=0)
-
-        assert "Track 0" in result
-        assert "Track 9" in result
-        mock_asc.get_library_songs_page.assert_called_once_with(0, 10)
-
-    def test_applescript_offset_ten_limit_ten_returns_second_page(self, monkeypatch):
-        """offset=10, limit=10: calls get_library_songs_page(10, 10) and returns pre-sliced page."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        mock_asc = MagicMock()
-        mock_asc.get_library_songs_page.return_value = (
-            True,
-            [self._make_as_song(i) for i in range(10, 20)],
-            100,
-            "",
-        )
-        monkeypatch.setattr(server, "asc", mock_asc)
-
-        result = server._library_browse(item_type="songs", limit=10, offset=10)
-
-        mock_asc.get_library_songs_page.assert_called_once_with(10, 10)
-        assert "Track 10" in result
-        assert "Track 19" in result
-        assert "Track 0" not in result
-        assert "Track 9" not in result
-
-    def test_applescript_limit_zero_returns_all(self, monkeypatch):
-        """limit=0: passes 0 to get_library_songs and returns all songs."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        mock_asc = MagicMock()
-        mock_asc.get_library_songs.return_value = (
-            True,
-            [self._make_as_song(i) for i in range(150)],
-        )
-        monkeypatch.setattr(server, "asc", mock_asc)
-
-        result = server._library_browse(item_type="songs", limit=0, offset=0)
-
-        assert "Track 0" in result
-        assert "Track 149" in result
-        mock_asc.get_library_songs.assert_called_once_with(0)
 
     # ── API path ──────────────────────────────────────────────────────────────
 
@@ -5098,26 +3309,6 @@ class TestLibraryBrowsePagination:
 
     # ── Regression: offset == limit on a large library ───────────────────────
 
-    def test_applescript_large_library_second_page_returns_tracks_not_error(self, monkeypatch):
-        """Regression: 1000+ song library, offset=10, limit=10 must return page 2 not an error."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        mock_asc = MagicMock()
-        mock_asc.get_library_songs_page.return_value = (
-            True,
-            [self._make_as_song(i) for i in range(10, 20)],
-            1000,
-            "",
-        )
-        monkeypatch.setattr(server, "asc", mock_asc)
-
-        result = server._library_browse(item_type="songs", limit=10, offset=10)
-
-        mock_asc.get_library_songs_page.assert_called_once_with(10, 10)
-        assert "Offset 10 exceeds" not in result
-        assert "Track 10" in result
-        assert "Track 19" in result
-        assert "Track 0" not in result
-
     @responses.activate
     def test_api_large_library_second_page_returns_tracks_not_error(
         self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
@@ -5139,27 +3330,6 @@ class TestLibraryBrowsePagination:
         assert "Track 10" in result
         assert "Track 19" in result
         assert "Track 0" not in result
-
-    def test_applescript_clean_only_verifies_the_page_not_the_library(self, monkeypatch):
-        """clean_only uses the O(limit) page path.
-
-        Rating lookups are network calls. Sweeping the whole library to make the
-        reported total post-filter would verify at most a budget's worth of an
-        arbitrary subset -- likely not even the rows returned -- so the count
-        would describe a filter that never ran. Bound the work to the page and
-        report the true library total instead.
-        """
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        mock_asc = MagicMock()
-        songs = [self._make_as_song(i) for i in range(5)]
-        mock_asc.get_library_songs_page.return_value = (True, songs, 5, None)
-        monkeypatch.setattr(server, "asc", mock_asc)
-
-        result = server._library_browse(item_type="songs", limit=10, offset=0, clean_only=True)
-
-        mock_asc.get_library_songs_page.assert_called_once()
-        mock_asc.get_library_songs.assert_not_called()
-        assert result is not None
 
 
 class TestCanonicalMatcher:
