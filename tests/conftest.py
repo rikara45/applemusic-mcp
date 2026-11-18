@@ -57,48 +57,6 @@ def _unrestricted_level(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _block_live_applescript(request, monkeypatch):
-    """Hard guarantee: no non-live test runs real AppleScript against the user's
-    Music.app. Every AppleScript call funnels through ``asc.run_applescript``;
-    replace it with a guard that raises, so an un-mocked ``asc.*`` call (e.g.
-    ``create_folder``) fails loudly in the test instead of silently mutating the
-    live library. This is the AppleScript analogue of ``_block_external_network``
-    and closes the leak that filled the library with ``My Folder`` / ``Summer
-    Folder`` debris (un-prefixed names the session sweep never matched).
-
-    Tests that exercise AppleScript must mock ``asc.run_applescript`` (or the
-    higher-level ``asc.*`` function) — a per-test ``monkeypatch.setattr`` overrides
-    this guard. Genuine live AppleScript belongs in the ``ui`` / ``ui_live`` gates.
-    The session-scoped debris sweep runs outside this function-scoped guard, so it
-    still cleans up."""
-    if request.node.get_closest_marker("ui") or request.node.get_closest_marker("ui_live"):
-        return
-
-    def _guard(script, *args, **kwargs):
-        raise RuntimeError(
-            "Blocked real AppleScript in a non-live test — mock asc.run_applescript "
-            "(or the asc.* helper) instead of hitting Music.app. Live AppleScript "
-            "belongs in the ui / ui_live gates."
-        )
-
-    monkeypatch.setattr(asc, "run_applescript", _guard)
-
-
-@pytest.fixture(autouse=True)
-def _playlist_names_follow_get_playlists(monkeypatch):
-    """Name resolution reads ``asc.get_playlist_names``; by default derive it from
-    ``asc.get_playlists`` at call time, as its real fallback does, so tests that
-    stub ``get_playlists`` keep driving resolution. test_applescript_cov captures the
-    real function at import to test it."""
-
-    def _names():
-        ok, playlists = asc.get_playlists()
-        return (True, [p.get("name", "") for p in playlists]) if ok else (False, playlists)
-
-    monkeypatch.setattr(asc, "get_playlist_names", _names)
-
-
-@pytest.fixture(autouse=True)
 def _isolate_browser_profile(request, tmp_path, monkeypatch):
     """Never let a non-live test touch the real Chrome profile. `clear_session`
     (hit by logout/reset on both the CLI and the `config` tool) rmtree's
@@ -125,13 +83,12 @@ os.environ.setdefault("APPLEMUSIC_NO_KEYRING", "1")
 # Redirect ALL persistent state (config / Chrome profile / cache / exports) to a
 # throwaway home for the whole session, BEFORE importing any applemusic_mcp module
 # (the path roots are read at import). This is the filesystem analogue of the
-# network/AppleScript guards: a test can never touch the user's real ~/.config,
+# network guard: a test can never touch the user's real ~/.config,
 # ~/.applemusic-mcp, or ~/.cache, no matter what it forgets to mock.
 import tempfile as _tempfile
 
 os.environ.setdefault("APPLEMUSIC_MCP_HOME", _tempfile.mkdtemp(prefix="amc-test-home-"))
 
-from applemusic_mcp import applescript as asc
 from applemusic_mcp import audit_log
 
 
@@ -171,86 +128,6 @@ def mock_audit_log_for_all_tests(tmp_path):
     log_path = audit_dir / "audit_log.jsonl"
     with patch.object(audit_log, "get_audit_log_path", return_value=log_path):
         yield log_path
-
-
-# Test debris markers. A playlist/folder is debris if its name starts with
-# one of these prefixes, or exactly matches one of the legacy single names.
-_TEST_NAME_PREFIXES = ("_TEST_", "_VERIFY", "_UI_TEST_", "_SNAPSHOT_TEST_")
-_TEST_NAME_EXACT = ("__TEST_PLAYLIST__", "🧪 Integration Test Playlist")
-
-
-def _sweep_test_debris():
-    """Delete all test playlists AND folders from the live Music library.
-
-    Idempotent and duplicate-safe: Music.app cheerfully allows duplicate
-    names, so the sweep matches by prefix and deletes every hit.
-
-    Covers BOTH collections. `folder playlist` is a *separate* collection
-    that `every user playlist` does NOT include — the earlier teardown
-    looped only user playlists, so every test folder (`_TEST_RENAME_FOLDER_`
-    et al.) leaked forever. Folders are swept first so deleting a folder
-    also takes any test playlists nested inside it.
-    """
-    if not asc.is_available():
-        return
-
-    # Single-name targets to delete unconditionally if present.
-    for name in _TEST_NAME_EXACT:
-        try:
-            asc.delete_playlist(name)
-        except Exception:
-            pass
-
-    # Prefix-match sweep over folders then user playlists, in one shell-out.
-    conds = " or ".join(f'(pn starts with "{p}")' for p in _TEST_NAME_PREFIXES)
-    asc.run_applescript(
-        f"""
-tell application "Music"
-    repeat with p in (every folder playlist)
-        try
-            set pn to name of p
-            if {conds} then
-                try
-                    delete p
-                end try
-            end if
-        end try
-    end repeat
-    repeat with p in (every user playlist)
-        try
-            set pn to name of p
-            if {conds} then
-                try
-                    delete p
-                end try
-            end if
-        end try
-    end repeat
-end tell"""
-    )
-
-
-# Clean up test playlists/folders before AND after the test session.
-@pytest.fixture(scope="session", autouse=True)
-def cleanup_test_playlists():
-    """Safety net that keeps the user's Music library free of test debris.
-
-    Sweeps known test markers across all test classes:
-    - Single names (legacy): __TEST_PLAYLIST__, 🧪 Integration Test Playlist
-    - Prefixed: _TEST_*, _VERIFY*, _UI_TEST_, _SNAPSHOT_TEST_
-
-    Runs the sweep TWICE:
-    - Pre-clean (before yield) heals debris left by a previously interrupted
-      run (Ctrl-C, timeout, crash) so this run starts from a clean library.
-    - Teardown (after yield) removes this run's debris.
-
-    Each test should still clean up its own debris inline, but an assertion
-    failure aborts a test before its inline cleanup runs — so without this
-    net the library slowly fills with `_TEST_*` junk.
-    """
-    _sweep_test_debris()  # pre-clean
-    yield
-    _sweep_test_debris()  # teardown
 
 
 @pytest.fixture

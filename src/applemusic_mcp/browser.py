@@ -37,7 +37,6 @@ import os
 import queue
 import sys
 import threading
-from pathlib import Path
 from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)

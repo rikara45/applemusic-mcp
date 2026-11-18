@@ -4,11 +4,10 @@ Tests the TrackCache class that stores stable track metadata
 (explicit status, ISRC) indexed by multiple ID types.
 """
 
-import pytest
 import json
-import tempfile
-from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from applemusic_mcp.track_cache import TrackCache, get_track_cache
 

@@ -56,29 +56,12 @@ half-ready environment that skips everything is a false green).
 
 This gate is cross-platform — it no longer needs macOS or the local Music.app.
 
-## Native UI gate — `make preflight-ui` (UI-touching releases)
+## Only when `make preflight` is green:
 
-`make preflight` validates the API engine. It does **not** exercise the native
-Music.app UI-automation paths (catalog deep-link playback via CoreGraphics, UI
-catalog search, transport controls) — those are version-fragile and have no CI
-coverage. Any release that changes `applescript.py` UI logic or the native
-playback flow must **also** pass `make preflight-ui` on **both** support
-machines:
-
-- the **iMac** (macOS 15 / Music 1.5)
-- the **mini** (macOS 26 / Music 26)
-
-Run it from an **unlocked, active console session** (Screen Sharing's GUI login,
-**not** SSH — synthetic mouse clicks need a real WindowServer session), signed
-into Apple Music, with Accessibility granted. It plays **muted** and pauses after
-each test. Like the API gate, it refuses to read as green if the core playback
-tests **skipped** (a locked screen skips everything — that is not validation).
-
-## Only when `make preflight` is green (plus `make preflight-ui` on both Macs for UI changes):
-
-1. Bump the version in **all three** places (they must match or the lock/release
-   drifts): `pyproject.toml`, `src/applemusic_mcp/__init__.py`, and the
-   `applemusic-mcp` entry in `uv.lock`.
+1. Bump the version in **all five** places (they must match or the lock/release
+   drifts — `tests/test_version_consistency.py` checks them): `pyproject.toml`,
+   `src/applemusic_mcp/__init__.py`, `server.json` (two entries), `SKILL.md`, and
+   the `applemusic-mcp` entry in `uv.lock`.
 2. Add a `CHANGELOG.md` entry under the new version.
 3. Update `SKILL.md` if any user-facing behavior changed (errors, setup,
    add/lookup flow).
@@ -88,5 +71,5 @@ tests **skipped** (a locked screen skips everything — that is not validation).
 
 Don't bump the version. A docs-only or tooling-only change that touches no
 runtime behavior can skip the live gate (note that in the PR), but anything that
-touches `applescript.py` or the add/resolve/playback flow in `server.py` must
-pass `make preflight` first.
+touches the add/resolve/playback flow in `server.py` must pass `make preflight`
+first.

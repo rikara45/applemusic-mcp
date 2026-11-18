@@ -180,42 +180,6 @@ class TestLibraryDispatcher:
         result = server.library(action="remove", track="MySong")
         assert "Removed" in result and "macOS" not in result
 
-    def test_snapshot_new_routes_correctly(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "get_user_preferences", lambda: _default_prefs())
-        monkeypatch.setattr(server, "_library_snapshot_new", lambda: "snapshot new result")
-        result = server.library(action="snapshot", query="new")
-        assert "snapshot new result" == result
-
-    def test_snapshot_history_routes_correctly(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "get_user_preferences", lambda: _default_prefs())
-        monkeypatch.setattr(server, "_library_history", lambda: "history result")
-        result = server.library(action="snapshot", query="history")
-        assert "history result" == result
-
-    def test_snapshot_list_routes_correctly(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "get_user_preferences", lambda: _default_prefs())
-        monkeypatch.setattr(server, "_library_snapshot_list", lambda: "list result")
-        result = server.library(action="snapshot", query="list")
-        assert "list result" == result
-
-    def test_snapshot_delete_routes_correctly(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "get_user_preferences", lambda: _default_prefs())
-        monkeypatch.setattr(server, "_library_snapshot_delete", lambda f: f"deleted {f}")
-        result = server.library(action="snapshot", query="delete myfile.json")
-        assert "deleted" in result
-        assert "myfile.json" in result
-
-    def test_snapshot_default_routes_correctly(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "get_user_preferences", lambda: _default_prefs())
-        monkeypatch.setattr(server, "_library_snapshot_default", lambda: "default result")
-        result = server.library(action="snapshot", query="")
-        assert "default result" == result
-
     def test_recently_added_routing(self, monkeypatch):
         """library(action='recently_added') routes to _library_recently_added (line 4137)."""
         called = []
@@ -230,15 +194,6 @@ class TestLibraryDispatcher:
         assert called
         assert "recently added result" == result
 
-    def test_remove_native_path(self, monkeypatch):
-        """library(action='remove') on macOS routes to _library_remove (native rail)."""
-        monkeypatch.setattr(server, "_write_rail", lambda *a, **k: "native")
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_library_remove", lambda track, artist: "Removed natively")
-        monkeypatch.setattr(server, "get_user_preferences", lambda: _default_prefs())
-        result = server.library(action="remove", track="Song A")
-        assert "Removed natively" in result
-
 
 # ============================================================================
 # _library_search
@@ -246,51 +201,6 @@ class TestLibraryDispatcher:
 
 
 class TestLibrarySearch:
-    def test_native_success_returns_formatted(self, monkeypatch):
-        songs = [_make_song_data()]
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(
-            server.asc, "search_library_page", lambda q, t, offset, limit: (True, songs, 1, "")
-        )
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: _default_prefs(fetch_explicit=False, clean_only=False),
-        )
-        result = server._library_search("Song A", types="songs")
-        assert "Song A" in result
-
-    def test_native_empty_no_token(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(
-            server.asc, "search_library_page", lambda q, t, offset, limit: (True, [], 0, "")
-        )
-        monkeypatch.setattr(server, "_has_developer_token", lambda: False)
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: _default_prefs(fetch_explicit=False, clean_only=False),
-        )
-        result = server._library_search("Missing Song", types="songs")
-        assert "No" in result
-
-    def test_native_empty_genre_returns_not_found(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(
-            server.asc, "search_library_page", lambda q, t, offset, limit: (True, [], 0, "")
-        )
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: _default_prefs(fetch_explicit=False, clean_only=False),
-        )
-        result = server._library_search("Jazz", types="genre")
-        assert "No tracks" in result
-        assert "Jazz" in result
-
     def test_genre_without_native_returns_message(self, monkeypatch):
         monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
         monkeypatch.setattr(server, "_engine", lambda: "api")
@@ -302,23 +212,6 @@ class TestLibrarySearch:
         result = server._library_search("Rock", types="genre")
         assert "genre" in result.lower()
         assert "macOS" in result or "native" in result or "isn't available" in result
-
-    def test_genre_with_asc_error_shows_hint(self, monkeypatch):
-        """Genre search via AS fails; asc_error appears in the message."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(
-            server.asc,
-            "search_library_page",
-            lambda q, t, offset, limit: (False, [], 0, "Music.app timeout"),
-        )
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: _default_prefs(fetch_explicit=False, clean_only=False),
-        )
-        result = server._library_search("Blues", types="genre")
-        assert "Music.app timeout" in result
 
     @responses.activate
     def test_api_fallback_returns_songs(
@@ -384,80 +277,12 @@ class TestLibrarySearch:
         result = server._library_search("Query")
         assert "API Error" in result or "401" in result
 
-    def test_limit_zero_normalized_to_25(self, monkeypatch):
-        """limit<=0 must not hit AS range errors; forced to 25."""
-        songs = [_make_song_data()]
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        captured = []
-
-        def fake_search(q, t, offset, limit):
-            captured.append(limit)
-            return (True, songs, 1, "")
-
-        monkeypatch.setattr(server.asc, "search_library_page", fake_search)
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: _default_prefs(fetch_explicit=False, clean_only=False),
-        )
-        server._library_search("X", limit=0)
-        assert captured[0] == 25
-
-    def test_fetch_explicit_enriches_tracks(self, monkeypatch):
-        songs = [_make_song_data(track_id="i.123")]
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(
-            server.asc, "search_library_page", lambda q, t, offset, limit: (True, songs, 1, "")
-        )
-        fake_cache = MagicMock()
-        fake_cache.get_explicit.return_value = "Yes"
-        monkeypatch.setattr(server, "get_track_cache", lambda: fake_cache)
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: _default_prefs(fetch_explicit=True, clean_only=False),
-        )
-        result = server._library_search("X")
-        fake_cache.get_explicit.assert_called()
-
-    def test_clean_only_filters_explicit(self, monkeypatch):
-        songs = [
-            _make_song_data(name="Clean", track_id="i.111"),
-            _make_song_data(name="Dirty", track_id="i.222"),
-        ]
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(
-            server.asc, "search_library_page", lambda q, t, offset, limit: (True, songs, 2, "")
-        )
-        fake_cache = MagicMock()
-
-        def get_explicit(tid):
-            return "Yes" if tid == "i.222" else "No"
-
-        fake_cache.get_explicit.side_effect = get_explicit
-        monkeypatch.setattr(server, "get_track_cache", lambda: fake_cache)
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: _default_prefs(fetch_explicit=False, clean_only=True),
-        )
-        result = server._library_search("X")
-        assert "Dirty" not in result
-        assert "Clean" in result
-
     @responses.activate
-    def test_api_asc_error_surfaced_in_no_songs_message(
+    def test_limit_zero_normalized_to_25(
         self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
     ):
+        """limit<=0 is normalized to 25 so the API request stays a single page."""
         _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(
-            server.asc, "search_library_page", lambda q, t, offset, limit: (False, [], 0, "AS boom")
-        )
         monkeypatch.setattr(
             server,
             "get_user_preferences",
@@ -469,8 +294,8 @@ class TestLibrarySearch:
             json={"results": {"library-songs": {"data": []}}},
             status=200,
         )
-        result = server._library_search("X")
-        assert "AS boom" in result
+        server._library_search("X", limit=0)
+        assert "limit=25" in responses.calls[0].request.url
 
     @responses.activate
     def test_api_clean_only_filters_explicit(
@@ -513,60 +338,6 @@ class TestLibrarySearch:
         )
         result = server._library_search("X")
         assert "bad token" in result
-
-    def test_explicit_cache_miss_sets_unknown(self, monkeypatch):
-        """Cache returns None for id → 'Unknown'; no-id track → 'Unknown' (lines 4219-4221)."""
-        songs = [
-            _make_song_data(name="A", track_id="i.has_id"),
-            _make_song_data(name="B", track_id=""),  # no id → line 4221
-        ]
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(
-            server.asc,
-            "search_library_page",
-            lambda q, t, offset, limit: (True, songs, 2, ""),
-        )
-        fake_cache = MagicMock()
-        fake_cache.get_explicit.return_value = None  # falsy → sets "Unknown" (line 4219)
-        monkeypatch.setattr(server, "get_track_cache", lambda: fake_cache)
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: _default_prefs(fetch_explicit=True, clean_only=False),
-        )
-        result = server._library_search("X")
-        assert "A" in result  # both tracks still returned
-        assert "B" in result
-
-    @responses.activate
-    def test_api_error_with_asc_error_shown(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """AS error + API connection error → both surfaced in message (line 4321)."""
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(
-            server.asc,
-            "search_library_page",
-            lambda q, t, offset, limit: (False, [], 0, "AS exploded"),
-        )
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: _default_prefs(fetch_explicit=False, clean_only=False),
-        )
-        import requests as _req
-
-        responses.add(
-            responses.GET,
-            "https://api.music.apple.com/v1/me/library/search",
-            body=_req.exceptions.ConnectionError("network down"),
-        )
-        result = server._library_search("X")
-        assert "API Error" in result
-        assert "AS exploded" in result
 
 
 # ============================================================================
@@ -706,35 +477,6 @@ class TestResolveCatalogTrackItunes:
 # ============================================================================
 # _verify_in_library
 # ============================================================================
-
-
-class TestVerifyInLibrary:
-    def test_found_on_first_attempt(self, monkeypatch):
-        monkeypatch.setattr(
-            server.asc, "find_library_track", lambda name, artist: (True, "Song A|||Artist A")
-        )
-        result = server._verify_in_library("Song A", "Artist A")
-        assert result == ("Song A", "Artist A")
-
-    def test_not_found_returns_none(self, monkeypatch):
-        monkeypatch.setattr(server.asc, "find_library_track", lambda name, artist: (False, ""))
-        monkeypatch.setattr(server.time, "sleep", lambda s: None)
-        result = server._verify_in_library("Missing", "Nobody")
-        assert result is None
-
-    def test_found_on_second_attempt(self, monkeypatch):
-        calls = [0]
-
-        def fake_find(name, artist):
-            calls[0] += 1
-            if calls[0] >= 2:
-                return (True, f"{name}|||{artist}")
-            return (False, "")
-
-        monkeypatch.setattr(server.asc, "find_library_track", fake_find)
-        monkeypatch.setattr(server.time, "sleep", lambda s: None)
-        result = server._verify_in_library("Song B", "Artist B")
-        assert result == ("Song B", "Artist B")
 
 
 # ============================================================================
@@ -1173,122 +915,6 @@ class TestBuildLibraryTrackData:
 
 
 class TestLibraryBrowse:
-    def test_native_songs_success_with_limit(self, monkeypatch):
-        songs = [_make_song_data()]
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(
-            server.asc, "get_library_songs_page", lambda offset, limit: (True, songs, 100, "")
-        )
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: _default_prefs(fetch_explicit=False, clean_only=False),
-        )
-        result = server._library_browse(item_type="songs", limit=25)
-        assert "Song A" in result
-
-    def test_native_songs_empty_library(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(
-            server.asc, "get_library_songs_page", lambda offset, limit: (True, [], 0, "")
-        )
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: _default_prefs(fetch_explicit=False, clean_only=False),
-        )
-        result = server._library_browse(item_type="songs", limit=25)
-        assert "No songs" in result or "No" in result
-
-    def test_native_songs_offset_exceeds_library(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(
-            server.asc, "get_library_songs_page", lambda offset, limit: (True, [], 10, "")
-        )
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: _default_prefs(fetch_explicit=False, clean_only=False),
-        )
-        result = server._library_browse(item_type="songs", limit=25, offset=100)
-        assert "Offset" in result or "exceeds" in result
-
-    def test_native_songs_limit_zero_full_fetch(self, monkeypatch):
-        songs = [_make_song_data()]
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(server.asc, "get_library_songs", lambda limit: (True, songs))
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: _default_prefs(fetch_explicit=False, clean_only=False),
-        )
-        result = server._library_browse(item_type="songs", limit=0)
-        assert "Song A" in result
-
-    def test_native_songs_full_fetch_empty_library(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(server.asc, "get_library_songs", lambda limit: (True, []))
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: _default_prefs(fetch_explicit=False, clean_only=False),
-        )
-        result = server._library_browse(item_type="songs", limit=0)
-        assert "No songs" in result or "No" in result
-
-    def test_native_songs_as_error_surfaces(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(
-            server.asc,
-            "get_library_songs_page",
-            lambda offset, limit: (False, [], 0, "Music.app not responding"),
-        )
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: _default_prefs(fetch_explicit=False, clean_only=False),
-        )
-        result = server._library_browse(item_type="songs", limit=25)
-        assert "Error" in result
-
-    def test_native_songs_full_fetch_as_error(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(server.asc, "get_library_songs", lambda limit: (False, "Script failed"))
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: _default_prefs(fetch_explicit=False, clean_only=False),
-        )
-        result = server._library_browse(item_type="songs", limit=0)
-        assert "Error" in result
-
-    def test_native_clean_only_uses_the_page_path(self, monkeypatch):
-        """clean_only rides the O(limit) page path so rating lookups are bounded
-        by the page rather than swept across the library."""
-        songs = [_make_song_data(name="Clean", track_id="i.c1")]
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(
-            server.asc, "get_library_songs_page", lambda offset, limit: (True, songs, 1, None)
-        )
-        fake_cache = MagicMock()
-        fake_cache.get_explicit.return_value = "No"
-        monkeypatch.setattr(server, "get_track_cache", lambda: fake_cache)
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: _default_prefs(fetch_explicit=False, clean_only=True),
-        )
-        result = server._library_browse(item_type="songs", limit=25, clean_only=True)
-        assert "Clean" in result
-
     @responses.activate
     def test_api_songs(self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch):
         _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
@@ -1499,53 +1125,6 @@ class TestLibraryBrowse:
 # ============================================================================
 
 
-class TestLibraryFavorites:
-    def test_success_returns_songs(self, monkeypatch):
-        songs = [_make_song_data(name="Loved Song")]
-        monkeypatch.setattr(server.asc, "get_loved_songs", lambda limit: (True, songs))
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: _default_prefs(fetch_explicit=False, clean_only=False),
-        )
-        result = server._library_favorites(limit=25)
-        assert "Loved Song" in result
-
-    def test_no_songs_returns_message(self, monkeypatch):
-        monkeypatch.setattr(server.asc, "get_loved_songs", lambda limit: (True, []))
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: _default_prefs(fetch_explicit=False, clean_only=False),
-        )
-        result = server._library_favorites(limit=25)
-        assert "No favorite songs" in result
-
-    def test_asc_error_returns_error_message(self, monkeypatch):
-        monkeypatch.setattr(server.asc, "get_loved_songs", lambda limit: (False, "Script error"))
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: _default_prefs(fetch_explicit=False, clean_only=False),
-        )
-        result = server._library_favorites(limit=25)
-        assert "Error" in result
-
-    def test_clean_only_filters_all_explicit_returns_message(self, monkeypatch):
-        songs = [_make_song_data(name="Explicit Fav", track_id="i.x1")]
-        monkeypatch.setattr(server.asc, "get_loved_songs", lambda limit: (True, songs))
-        fake_cache = MagicMock()
-        fake_cache.get_explicit.return_value = "Yes"
-        monkeypatch.setattr(server, "get_track_cache", lambda: fake_cache)
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: _default_prefs(fetch_explicit=False, clean_only=True),
-        )
-        result = server._library_favorites(limit=25, clean_only=True)
-        assert "No favorite songs" in result
-
-
 # ============================================================================
 # _library_recently_added
 # ============================================================================
@@ -1682,60 +1261,6 @@ class TestLibraryRate:
         result = server._library_rate(action="set", track="1234567890")
         assert "native" in result.lower() or "Error" in result
 
-    @responses.activate
-    def test_catalog_id_get_native_success(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        # Return track info for catalog ID lookup
-        responses.add(
-            responses.GET,
-            "https://api.music.apple.com/v1/catalog/us/songs/1234567890",
-            json={"data": [{"attributes": {"name": "Catalog Song", "artistName": "Artist"}}]},
-            status=200,
-        )
-        monkeypatch.setattr(server, "get_storefront", lambda: "us")
-        monkeypatch.setattr(server.asc, "get_rating", lambda name, artist: (True, 80))
-        result = server._library_rate(action="get", track="1234567890")
-        assert "★" in result or "Catalog Song" in result
-
-    @responses.activate
-    def test_catalog_id_set_native_success(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        responses.add(
-            responses.GET,
-            "https://api.music.apple.com/v1/catalog/us/songs/1234567890",
-            json={"data": [{"attributes": {"name": "Catalog Song", "artistName": "Artist"}}]},
-            status=200,
-        )
-        monkeypatch.setattr(server, "get_storefront", lambda: "us")
-        monkeypatch.setattr(server.asc, "set_rating", lambda name, val, artist: (True, "Set"))
-        result = server._library_rate(action="set", track="1234567890", stars=4)
-        assert "★" in result or "Catalog Song" in result
-
-    @responses.activate
-    def test_catalog_id_get_track_info_not_found(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        responses.add(
-            responses.GET,
-            "https://api.music.apple.com/v1/catalog/us/songs/1234567890",
-            json={"data": []},
-            status=200,
-        )
-        monkeypatch.setattr(server, "get_storefront", lambda: "us")
-        result = server._library_rate(action="get", track="1234567890")
-        assert "Error" in result
-
     def test_persistent_id_returns_error(self):
         # Persistent ID: 12+ hex chars
         result = server._library_rate(action="love", track="ABC123DEF456")
@@ -1746,55 +1271,11 @@ class TestLibraryRate:
         result = server._library_rate(action="love", track="i.ABC123")
         assert "Library ID" in result or "not supported" in result
 
-    def test_name_love_native_success(self, monkeypatch):
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(
-            server.asc, "love_track", lambda name, artist: (True, "Loved: Song A by Artist A")
-        )
-        result = server._library_rate(action="love", track="Song A", artist="Artist A")
-        assert "Loved" in result or "loved" in result.lower()
-
-    def test_name_get_native_success(self, monkeypatch):
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server.asc, "get_rating", lambda name, artist: (True, 60))
-        result = server._library_rate(action="get", track="Song A", artist="Artist A")
-        assert "★" in result
-
-    def test_name_set_native_success(self, monkeypatch):
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server.asc, "set_rating", lambda name, val, artist: (True, "Set"))
-        result = server._library_rate(action="set", track="Song A", artist="Artist A", stars=3)
-        assert "★" in result
-
-    def test_name_get_not_native_returns_error(self, monkeypatch):
-        monkeypatch.setattr(server, "_engine", lambda: "api")
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
-        result = server._library_rate(action="get", track="Song A")
-        assert "native" in result.lower() or "Error" in result
-
-    def test_name_set_not_native_returns_error(self, monkeypatch):
-        monkeypatch.setattr(server, "_engine", lambda: "api")
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
-        result = server._library_rate(action="set", track="Song A", stars=5)
-        assert "native" in result.lower() or "Error" in result
-
     @responses.activate
-    def test_name_love_native_as_fail_api_fallback_success(
+    def test_name_love_via_api(
         self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
     ):
-        """AS fails with logic error → API fallback for love."""
         _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        # AS returns failure with unknown error (logic-level = will cascade)
-        monkeypatch.setattr(
-            server.asc, "love_track", lambda name, artist: (False, "track not found")
-        )
-        monkeypatch.setattr(server.asc, "classify_error", lambda err: server.asc.ERROR_UNKNOWN)
-        # Catalog search returns matching song
         api_song = _make_api_song("Song A", "Artist A", "1234567890")
         responses.add(
             responses.GET,
@@ -1811,33 +1292,24 @@ class TestLibraryRate:
         result = server._library_rate(action="love", track="Song A", artist="Artist A")
         assert "Loved" in result or "loved" in result.lower()
 
-    @responses.activate
-    def test_name_love_as_env_error_no_cascade(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """AS fails with env error (not ERROR_UNKNOWN) → no cascade, return AS error."""
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(
-            server.asc, "love_track", lambda name, artist: (False, "Music.app not running")
-        )
-        monkeypatch.setattr(
-            server.asc, "classify_error", lambda err: "not_running"
-        )  # not ERROR_UNKNOWN
-        result = server._library_rate(action="love", track="Song A")
-        assert "Error" in result
+    def test_name_get_not_native_returns_error(self, monkeypatch):
+        monkeypatch.setattr(server, "_engine", lambda: "api")
+        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
+        result = server._library_rate(action="get", track="Song A")
+        assert "native" in result.lower() or "Error" in result
+
+    def test_name_set_not_native_returns_error(self, monkeypatch):
+        monkeypatch.setattr(server, "_engine", lambda: "api")
+        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
+        result = server._library_rate(action="set", track="Song A", stars=5)
+        assert "native" in result.lower() or "Error" in result
 
     @responses.activate
     def test_name_love_not_found_in_catalog(
         self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
     ):
-        """After AS fails, catalog search returns nothing."""
+        """Catalog search returns nothing → a not-found message, not a crash."""
         _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server.asc, "love_track", lambda name, artist: (False, "not found"))
-        monkeypatch.setattr(server.asc, "classify_error", lambda err: server.asc.ERROR_UNKNOWN)
         responses.add(
             responses.GET,
             "https://api.music.apple.com/v1/catalog/us/search",
@@ -1848,32 +1320,26 @@ class TestLibraryRate:
         result = server._library_rate(action="love", track="Ghost Song")
         assert "not found" in result.lower() or "Track not found" in result
 
-    def test_name_dislike_native_success(self, monkeypatch):
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(
-            server.asc, "dislike_track", lambda name, artist: (True, "Disliked: Song B")
+    @responses.activate
+    def test_name_dislike_via_api(
+        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
+    ):
+        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
+        api_song = _make_api_song("Song B", "Artist B", "1234567890")
+        responses.add(
+            responses.GET,
+            "https://api.music.apple.com/v1/catalog/us/search",
+            json={"results": {"songs": {"data": [api_song]}}},
+            status=200,
         )
+        responses.add(
+            responses.PUT,
+            "https://api.music.apple.com/v1/me/ratings/songs/1234567890",
+            status=200,
+        )
+        monkeypatch.setattr(server, "get_storefront", lambda: "us")
         result = server._library_rate(action="dislike", track="Song B")
         assert "Disliked" in result or "dislike" in result.lower()
-
-    def test_name_get_native_error(self, monkeypatch):
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(
-            server.asc, "get_rating", lambda name, artist: (False, "track not found")
-        )
-        result = server._library_rate(action="get", track="Missing Song")
-        assert "Error" in result
-
-    def test_name_set_native_error(self, monkeypatch):
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(
-            server.asc, "set_rating", lambda name, val, artist: (False, "track not found")
-        )
-        result = server._library_rate(action="set", track="Missing Song", stars=3)
-        assert "Error" in result
 
     def test_invalid_json_track_produces_error(self, monkeypatch):
         """Malformed JSON track → r.error → 'Error: <msg>' (line 5652)."""
@@ -1897,36 +1363,11 @@ class TestLibraryRate:
         assert "Error" in result
 
     @responses.activate
-    def test_catalog_id_get_exception_during_lookup(
+    def test_name_love_api_rate_failure(
         self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
     ):
-        """Exception during catalog ID name lookup is swallowed (lines 5688-5689)."""
+        """Love by name: song found but the rate call fails."""
         _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "get_storefront", lambda: "us")
-        # Force exception inside the try block that fetches song name
-        import requests as _req
-
-        responses.add(
-            responses.GET,
-            "https://api.music.apple.com/v1/catalog/us/songs/1234567890",
-            body=_req.exceptions.ConnectionError("net error"),
-        )
-        # After the exception is swallowed, track_name stays "" → "Could not find track info"
-        result = server._library_rate(action="get", track="1234567890")
-        assert "Error" in result
-
-    @responses.activate
-    def test_name_love_api_fallback_api_rate_failure(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """API fallback for love by name: song found but rate call fails (line 5774)."""
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server.asc, "love_track", lambda name, artist: (False, "not found"))
-        monkeypatch.setattr(server.asc, "classify_error", lambda err: server.asc.ERROR_UNKNOWN)
         api_song = _make_api_song("Song A", "Artist A", "1234567890")
         responses.add(
             responses.GET,
@@ -1951,21 +1392,6 @@ class TestLibraryRate:
 
 
 class TestLibraryBrowseMissingLines:
-    def test_native_full_fetch_pagination_error(self, monkeypatch):
-        """Offset exceeds count in full-fetch path → pagination error (line 5057)."""
-        songs = [_make_song_data(name=f"Song {i}") for i in range(3)]
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        monkeypatch.setattr(server.asc, "get_library_songs", lambda limit: (True, songs))
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: _default_prefs(fetch_explicit=False, clean_only=False),
-        )
-        # limit=0 triggers full-fetch; offset=100 exceeds 3 songs → pagination error
-        result = server._library_browse(item_type="songs", limit=0, offset=100)
-        assert "Offset" in result or "exceeds" in result
-
     @responses.activate
     def test_api_pagination_error(
         self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
@@ -2004,21 +1430,6 @@ class TestLibraryBrowseMissingLines:
         )
         result = server._library_browse(item_type="songs", limit=10)
         assert "token missing" in result
-
-
-class TestLibraryFavoritesMissingLines:
-    def test_pagination_error_when_offset_exceeds(self, monkeypatch):
-        """Offset beyond total in _library_favorites → pagination error (line 5206)."""
-        songs = [_make_song_data(name="Loved Song")]
-        monkeypatch.setattr(server.asc, "get_loved_songs", lambda limit: (True, songs))
-        monkeypatch.setattr(
-            server,
-            "get_user_preferences",
-            lambda: _default_prefs(fetch_explicit=False, clean_only=False),
-        )
-        # offset=100 exceeds 1 song → _apply_pagination returns error
-        result = server._library_favorites(limit=25, offset=100)
-        assert "Offset" in result or "exceeds" in result
 
 
 class TestLibraryRecentlyAddedMissingLines:
@@ -2075,16 +1486,6 @@ class TestLibraryRecentlyAddedMissingLines:
 # ===========================================================================
 # clean_only must not answer "clean" when it means "not known to be explicit"
 # ===========================================================================
-def test_parse_explicit_is_three_state():
-    """ "Could not read it" must not collapse to "No" -- that is the one wrong
-    answer for a caller filtering for children."""
-    from applemusic_mcp.applescript import _parse_explicit
-
-    assert _parse_explicit("true") == "Yes"
-    assert _parse_explicit("false") == "No"
-    for cannot_tell in ("unknown", "", "   ", "missing value"):
-        assert _parse_explicit(cannot_tell) == "Unknown", cannot_tell
-
 
 def test_clean_filter_removes_explicit_and_discloses_unverified(monkeypatch):
     """Old filter was `!= "Yes"` with uncached ratings set to "Unknown", so a

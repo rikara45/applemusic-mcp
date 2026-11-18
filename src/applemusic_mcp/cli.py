@@ -19,50 +19,25 @@ import sys
 import time
 
 from .auth import (
-    get_config_dir,
     generate_developer_token,
-    run_auth_server,
+    get_config_dir,
     get_developer_token,
     get_user_token,
+    run_auth_server,
 )
 
 
 def cmd_login(args):
-    """Sign in. On macOS the default is the Safari token harvest (no Chrome / no
-    Playwright); pass `--chrome` for the Chrome web player instead, or `--dev` for
-    the Apple Developer token flow. Off macOS, the Chrome web flow is the default
-    (it's the only path there)."""
+    """Sign in through the Chrome web player, or with an Apple Developer token
+    (`--dev`)."""
     if args.dev:
         return _login_dev(args)
-
-    import platform
-
-    is_mac = platform.system() == "Darwin"
-    # Explicit --safari always routes to the Safari harvest (which rejects non-macOS
-    # with a clear message rather than silently using Chrome).
-    if getattr(args, "safari", False):
-        return _login_safari()
-    want_chrome = getattr(args, "chrome", False)
-    # macOS default = Safari (zero-install, no Chrome). --chrome opts into Chrome.
-    # Off macOS = Chrome (Playwright ships there; it's the only path).
-    if is_mac and not want_chrome:
-        return _login_safari()
-    return _login_chrome(is_mac=is_mac)
+    return _login_chrome()
 
 
-def _login_chrome(is_mac: bool = False):
-    """Chrome web-player sign-in (Playwright). The off-mac default; on macOS it's
-    opt-in via --chrome and needs the `browser` extra installed."""
-    from .browser import _cli_signin, _profile_in_use, is_available
-
-    # On macOS Playwright is an optional extra — guide instead of a cryptic failure.
-    if is_mac and not is_available():
-        print(
-            "Chrome sign-in needs Playwright, which macOS doesn't install by default.\n"
-            "  • Zero-install instead:  applemusic-mcp login --safari\n"
-            "  • Or add Chrome support:  pip install 'applemusic-mcp[browser]'  then re-run"
-        )
-        return 1
+def _login_chrome():
+    """Chrome web-player sign-in (Playwright): the only interactive path here."""
+    from .browser import _cli_signin, _profile_in_use
 
     # Fail fast rather than fighting a running MCP server for the Chrome profile
     # (which orphans windows and kills the server's browser context).
@@ -71,61 +46,11 @@ def _login_chrome(is_mac: bool = False):
             "The MCP server appears to be running and using the browser profile.\n"
             "Sign in through the server instead — ask your assistant to run the Apple\n"
             "Music sign-in (it'll open the player window) — or stop the server first,\n"
-            "then re-run `applemusic-mcp login --chrome`.",
+            "then re-run `applemusic-mcp login`.",
             flush=True,
         )
         return 1
     return _cli_signin()
-
-
-def _login_safari():
-    """macOS default: harvest the media-user-token from a signed-in Safari (no
-    Chrome / no Playwright). The developer token is fetched tokenlessly on demand,
-    so this alone is a complete sign-in. On failure, spell out the (security-
-    sensitive) one-time Safari setting and the alternatives."""
-    import platform
-
-    if platform.system() != "Darwin":
-        print("--safari is macOS-only. Use `applemusic-mcp login --chrome` instead.")
-        return 1
-    from . import safari
-    from .auth import save_user_token
-
-    print("Reading your Apple Music session from Safari…")
-    ok, res = safari.media_user_token()
-    if not ok and res == safari.NOT_SIGNED_IN:
-        shown, why = safari.show_sign_in()
-        if not shown:
-            print(f"{res}\nCouldn't bring Safari forward to sign in: {why}")
-            return 1
-        print("Sign in to Apple Music in Safari (the music.apple.com tab is in front).")
-        print("Waiting up to 5 minutes; this finishes on its own once you're in. Ctrl-C stops.")
-        try:
-            ok, res = safari.wait_for_sign_in()
-        except KeyboardInterrupt:
-            print("\nStopped waiting. Run `applemusic-mcp login` again once you've signed in.")
-            return 1
-    if ok:
-        save_user_token(res)
-        print("Signed in via Safari — no Chrome needed (the developer token is fetched")
-        print("automatically). Playback uses Music.app on macOS. For the cross-platform")
-        print("web player, install `pip install 'applemusic-mcp[browser]'` and set mode=web.")
-        return 0
-
-    print(res)  # the specific reason (setting off / not signed in)
-    print()
-    print("To finish signing in, pick whichever you prefer:")
-    print('  1) Easiest, no Chrome — in Safari turn on Settings → Advanced → "Show')
-    print('     features for web developers", then the Develop menu → "Allow JavaScript')
-    print("     from Apple Events\", make sure you're signed into Apple Music at")
-    print("     music.apple.com, and re-run `applemusic-mcp login`.")
-    print("     (That setting only lets this tool read ONE cookie — your Apple Music")
-    print("     token — from your own signed-in Safari. It reads nothing else, and you")
-    print("     can turn it back off afterward.)")
-    print("  2) No browser at all — Apple Developer token:  applemusic-mcp login --dev")
-    print("  3) Use Chrome —  pip install 'applemusic-mcp[browser]'  then")
-    print("     applemusic-mcp login --chrome")
-    return 1
 
 
 def _login_dev(args):
@@ -231,8 +156,7 @@ def cmd_status(args):
         from . import capabilities
 
         lvl = capabilities.current()
-        ui_note = lvl.ui and lvl.explicit and lvl.name != "full"
-        level = f"{lvl.name}{' + UI scripting' if ui_note else ''}"
+        level = lvl.name
     except ValueError as e:
         level = f"invalid ({e})"
     print(f"Permission level: {level} (each MCP client sets its own with `serve --level`)")
@@ -300,13 +224,11 @@ def cmd_serve(args):
     level = getattr(args, "level", None)
     if level is not None:
         try:
-            capabilities.parse(level, None)
+            capabilities.parse(level)
         except ValueError as e:
             print(f"applemusic-mcp: {e}", file=sys.stderr)
             sys.exit(2)
         os.environ[capabilities.ENV_LEVEL] = level.strip().lower()
-    if getattr(args, "allow_ui", False):
-        os.environ[capabilities.ENV_UI] = "1"
     from .server import main
 
     main()
@@ -320,24 +242,16 @@ def main():
     serve = sub.add_parser("serve", help="Run the MCP server (your client calls this)")
     serve.add_argument(
         "--level",
-        help="What the server may reach: music (Music.app only), api (+ Apple's "
-        "music APIs), web (+ the web players), full (everything). Unset: full.",
-    )
-    serve.add_argument(
-        "--allow-ui", action="store_true", help="Allow Accessibility UI scripting (clicks)"
+        help="What the server may reach: api (Apple's music APIs), web (+ the "
+        "Chrome web player), full (everything). Unset: full.",
     )
 
     login = sub.add_parser("login", help="Sign in (web flow; --dev for an Apple Developer token)")
     login.add_argument("--dev", action="store_true", help="Apple Developer token flow (.p8)")
     login.add_argument(
-        "--safari",
-        action="store_true",
-        help="macOS: read the session from a signed-in Safari (default on macOS)",
-    )
-    login.add_argument(
         "--chrome",
         action="store_true",
-        help="Use the Chrome web player to sign in (default off macOS; needs the browser extra)",
+        help="Use the Chrome web player to sign in (the default)",
     )
     login.add_argument("--team-id", dest="team_id", help="Apple Developer Team ID (with --dev)")
     login.add_argument("--key-id", dest="key_id", help="MusicKit Key ID (with --dev)")

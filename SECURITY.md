@@ -22,7 +22,7 @@ Without an Apple Developer account, the server can use Apple's **public** `AMPWe
 ## Hardening notes
 
 - Browser features (sign-in, playback, queue) drive a **local** Chrome via Playwright. The server never opens a network-listening port except the short-lived `localhost`-only callback used by the optional `authorize` flow, which is gated by an exact Host/Origin check (anti-DNS-rebinding).
-- User input routed into AppleScript is escaped. Values passed to the Chrome/Playwright engine are sent as `page.evaluate` arguments rather than interpolated into a script body. The Safari engine does interpolate JS into an AppleScript literal, where the value is `json.dumps`-encoded (with `ensure_ascii`, so line separators stay escaped) and then AppleScript-quoted.
+- User input passed to the Chrome/Playwright engine is sent as `page.evaluate` arguments rather than interpolated into a script body, so a track name can't become code.
 
 ## Supported versions
 

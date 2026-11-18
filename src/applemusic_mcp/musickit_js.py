@@ -5,7 +5,7 @@ string or an object) and returning a value or a promise. The same JS runs throug
 two transports:
 
 - ``browser.py`` (Playwright): ``page.evaluate(JS, arg)`` — awaits returned promises.
-- ``safari_player.py`` (Safari): wrapped in an async IIFE and run via AppleScript
+- ``browser.py``: wrapped in an async IIFE and evaluated in the Chrome web player
   ``do JavaScript`` (which does not await), then polled.
 
 Keeping the JS in one place means the Chrome and Safari engines drive MusicKit
