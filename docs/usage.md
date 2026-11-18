@@ -7,6 +7,7 @@ Just talk to your assistant:
 - *"Organize my playlists into Rock, Jazz, and Electronic folders."*
 - *"Play my workout playlist on shuffle, and queue up Bohemian Rhapsody next."*
 - *"Find songs similar to Bohemian Rhapsody and add them to my library."*
+- *"Make me a playlist that feels like these three songs."*
 - *"What have I been listening to lately, and what's topping the charts?"*
 - *"Export my library to CSV."*
 
@@ -19,4 +20,5 @@ Just talk to your assistant:
 - **Adding a not-yet-owned catalog track to a *Music.app-made* playlist is two-step.** The dev-token API can't write those playlists, so the tool adds the track to your library over the API, then attaches it locally once iCloud syncs it down (usually seconds). If the sync is slow you'll get "added to your library — re-run to attach"; just re-run the same add. Rarely, if the sync stalls past ~20s, Music.app briefly flashes as a last-resort sync nudge (focus returns to your previous app) — expected, not a glitch.
 - **Output format** on list tools: `format` (`text` / `json` / `csv` / `none`), `export` (writes a file readable as an MCP resource via `exports://`), `full` (all metadata).
 - **URL playback** handles albums, playlists, and songs: `playback(action="play", url="https://music.apple.com/...")`.
+- **Same-feel playlist: `vibe(seeds=[...])`.** Up to five seed songs (title, `Artist - Title`, or a catalog id) become a ranked list: shared genre, the seed artists, and their era decide the order, with Apple's per-song radio as the source. `candidates=[...]` adds your own suggestions (each checked against the catalog, so an invented title is dropped instead of written), `exclude=[...]` drops songs, and `count` caps the result. It previews by default — everything is listed with why it scored — and `create=true` plus `name` builds it (batch of 25, retried briefly for playlist propagation). Creating **adds every picked song to your library**, and costs two requests per seed, so keep seed lists short. Every call re-runs the pipeline because Apple's radio is not reproducible: the preview is an estimate, not a shopping list.
 - **Storefronts:** catalog actions take an optional `storefront` (for example `storefront="it"`) to query other regions without changing your default.
