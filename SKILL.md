@@ -492,6 +492,7 @@ When a user asks for something, the right MCP tool depends on whether they're se
 | Add a catalog song to the user's library | `library(action='add', track='...')` | API only — needs a developer token (generated or harvested) + a media-user-token (`signin`). The UI-automation fallback was removed in 0.15.0 (see note above). |
 | Add a song (in library OR catalog) to a playlist | `playlist(action='add', track='...', auto_add=True)` | `auto_add=True` is required to reach the catalog when the song isn't already in the library. Default is False to avoid unwanted library writes — set it to True for "fill this playlist" workflows. |
 | Browse charts / recommendations | `discover` | API only. No UI fallback for this one. |
+| Turn "I like these songs" into a playlist of similar ones | `vibe(seeds=[...])` | Previews by default; `create=true` + `name` builds it. Two API requests per seed (max 5 seeds), and creating adds every picked song to the library. |
 
 `library(action='search')` returns one page: `limit` (default 25) caps the results and `offset` pages through larger result sets. The text header shows `start-end of total`, so when `end < total` there are more results — bump `offset` by `limit` to fetch the next page (mirrors `action='browse'`).
 

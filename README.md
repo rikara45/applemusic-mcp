@@ -108,7 +108,7 @@ On a Mac, sign in at [music.apple.com](https://music.apple.com) in Safari first 
 
 ## Tools
 
-Seven action-based tools keep the MCP context small. Each takes an `action` and routes to the right engine.
+Seven action-based tools plus `vibe` keep the MCP context small. Each action-based tool takes an `action` and routes to the right engine.
 
 | Tool | Actions |
 |---|---|
@@ -119,6 +119,7 @@ Seven action-based tools keep the MCP context small. Each takes an `action` and 
 | `playback` | play (track / album / playlist / URL), control, now_playing, settings, reveal, airplay |
 | `queue` | list, set, play_next, play_last, remove, jump, clear, autoplay (Up Next — Safari on macOS, Chrome elsewhere; `engine=` to pick) |
 | `config` | status, signin, logout, reset, set-pref, audit-log, clear-audit-log, list-storefronts |
+| `vibe` | seed songs (+ optional candidates/excludes) → preview of same-feel tracks, then `create=true` to build the playlist |
 
 Batching, importing playlists, dry runs, export formats and storefronts: [usage patterns](https://github.com/epheterson/applemusic-mcp/blob/main/docs/usage.md).
 

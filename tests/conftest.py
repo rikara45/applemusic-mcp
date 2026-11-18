@@ -141,6 +141,20 @@ from applemusic_mcp import audit_log
 # need the real harvest (test_harvest) restore it; tests that control harvesting
 # monkeypatch it per-test, which overrides this.
 @pytest.fixture(autouse=True)
+def _isolate_keychain(monkeypatch):
+    """Never touch the user's REAL OS keychain.
+
+    Temp config dirs only cover the file store: ``secret_set``/``secret_delete``
+    still reach the keychain when the file path is taken (their best-effort stale
+    copy purge), which really did wipe a developer's saved Music-User-Token on
+    every `pytest` run. Tests that exercise the keychain install their own fake
+    backend, which overrides this."""
+    from applemusic_mcp import auth
+
+    monkeypatch.setattr(auth, "_keyring", None)
+
+
+@pytest.fixture(autouse=True)
 def _stub_web_token_harvest():
     from applemusic_mcp import auth
 

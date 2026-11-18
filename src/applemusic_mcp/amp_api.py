@@ -322,10 +322,23 @@ def search_library_songs(term: str, limit: int = 25) -> list[dict]:
         return []
 
 
-def search_catalog_songs(term: str, limit: int = 5) -> list[dict]:
-    """Catalog song search: [{id, name, artist}]."""
+def _song_row(song_id: str, a: dict) -> dict:
+    return {
+        "id": song_id,
+        "name": a.get("name", ""),
+        "artist": a.get("artistName", ""),
+        "genres": a.get("genreNames") or [],
+        "release_date": a.get("releaseDate", ""),
+    }
+
+
+def search_catalog_songs(term: str, limit: int = 5, storefront: str = "") -> list[dict]:
+    """Catalog song search: [{id, name, artist, genres, release_date}].
+
+    ``genres``/``release_date`` are what the vibe pipeline ranks on; they come
+    free in this response, so no extra request is needed."""
     try:
-        store = auth.get_user_preferences().get("storefront", "us")
+        store = storefront or auth.get_user_preferences().get("storefront", "us")
         r = requests.get(
             f"{AMP}/catalog/{store}/search",
             headers=_headers(),
@@ -339,16 +352,62 @@ def search_catalog_songs(term: str, limit: int = 5) -> list[dict]:
         if r.status_code != 200:
             return []
         songs = r.json().get("results", {}).get("songs", {}).get("data", [])
-        return [
-            {
-                "id": s["id"],
-                "name": s["attributes"].get("name", ""),
-                "artist": s["attributes"].get("artistName", ""),
-            }
-            for s in songs
-        ]
+        return [_song_row(s["id"], s.get("attributes", {})) for s in songs]
     except Exception:
         return []
+
+
+def catalog_song(song_id: str, storefront: str = "") -> Optional[dict]:
+    """One catalog song by id, in the same shape as ``search_catalog_songs``.
+    None when the id isn't in that storefront (404) or the read fails."""
+    try:
+        store = storefront or auth.get_user_preferences().get("storefront", "us")
+        r = requests.get(
+            f"{AMP}/catalog/{store}/songs/{song_id}", headers=_headers(), timeout=TIMEOUT
+        )
+        note_status(r.status_code)
+        if r.status_code != 200:
+            return None
+        data = r.json().get("data", [])
+        return _song_row(data[0]["id"], data[0].get("attributes", {})) if data else None
+    except Exception:
+        return None
+
+
+_NEXT_TRACKS_LIMIT = 10  # the endpoint's hard max (11+ is a 400)
+
+
+def next_tracks(song_id: str) -> tuple[list[dict], str]:
+    """Tracks Apple's per-song radio would play next, for one seed.
+
+    Returns ``(tracks, err)`` where ``err`` is ``""`` on success, ``"expired"``
+    (401/403), ``"throttled"`` (429) or a failure message — the caller owns the
+    user-facing wording. Tracks are the same shape as ``search_catalog_songs``.
+
+    Verified live 2026-11-18: ``POST /me/stations/next-tracks/ra.{id}`` works
+    with the harvested web-player token, at most 10 songs per call, and each
+    call is a fresh draw (the station isn't reproducible)."""
+    try:
+        r = requests.post(
+            f"{AMP}/me/stations/next-tracks/ra.{song_id}",
+            headers=_headers(),
+            params={"limit": _NEXT_TRACKS_LIMIT},
+            timeout=TIMEOUT,
+        )
+        if r.status_code in (401, 403):
+            note_status(r.status_code)
+            return [], "expired"
+        if r.status_code == 429:
+            note_status(r.status_code)
+            return [], "throttled"
+        if r.status_code != 200:
+            return [], _err(r, "next_tracks")
+        note_status(r.status_code)
+        return [_song_row(s["id"], s.get("attributes", {})) for s in r.json().get("data", [])], ""
+    except FileNotFoundError:  # no Music-User-Token saved: same fix as an expired one
+        return [], "expired"
+    except Exception as e:
+        return [], str(e)
 
 
 # --- mutations -------------------------------------------------------------

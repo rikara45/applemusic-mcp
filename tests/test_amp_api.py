@@ -566,7 +566,9 @@ def test_search_catalog_songs_shape_and_storefront():
         status=200,
     )
     out = amp_api.search_catalog_songs("Money", limit=5)
-    assert out == [{"id": "c1", "name": "Money", "artist": "Pink Floyd"}]
+    assert out == [
+        {"id": "c1", "name": "Money", "artist": "Pink Floyd", "genres": [], "release_date": ""}
+    ]
     req = responses.calls[0].request
     assert "types=songs" in req.url and "limit=5" in req.url
 
@@ -585,6 +587,165 @@ def test_search_catalog_songs_exception_empty():
         body=requests.exceptions.ConnectionError("down"),
     )
     assert amp_api.search_catalog_songs("x") == []
+
+
+@responses.activate
+def test_search_catalog_songs_keeps_genres_and_date_and_honours_storefront():
+    responses.add(
+        responses.GET,
+        f"{amp_api.AMP}/catalog/id/search",
+        json={
+            "results": {
+                "songs": {
+                    "data": [
+                        {
+                            "id": "c1",
+                            "attributes": {
+                                "name": "Money",
+                                "artistName": "Pink Floyd",
+                                "genreNames": ["Rock", "Music"],
+                                "releaseDate": "1973-03-01",
+                            },
+                        }
+                    ]
+                }
+            }
+        },
+        status=200,
+    )
+    assert amp_api.search_catalog_songs("Money", 5, "id") == [
+        {
+            "id": "c1",
+            "name": "Money",
+            "artist": "Pink Floyd",
+            "genres": ["Rock", "Music"],
+            "release_date": "1973-03-01",
+        }
+    ]
+
+
+# --- catalog_song / next_tracks (the vibe pipeline's reads) ----------------
+
+
+@responses.activate
+def test_catalog_song_by_id():
+    responses.add(
+        responses.GET,
+        f"{amp_api.AMP}/catalog/us/songs/123",
+        json={
+            "data": [
+                {
+                    "id": "123",
+                    "attributes": {
+                        "name": "One",
+                        "artistName": "A",
+                        "genreNames": ["Pop"],
+                        "releaseDate": "2001-01-01",
+                    },
+                }
+            ]
+        },
+        status=200,
+    )
+    assert amp_api.catalog_song("123") == {
+        "id": "123",
+        "name": "One",
+        "artist": "A",
+        "genres": ["Pop"],
+        "release_date": "2001-01-01",
+    }
+
+
+@responses.activate
+def test_catalog_song_missing_or_error_is_none():
+    responses.add(responses.GET, f"{amp_api.AMP}/catalog/us/songs/404", status=404)
+    assert amp_api.catalog_song("404") is None
+    responses.add(
+        responses.GET,
+        f"{amp_api.AMP}/catalog/us/songs/500",
+        body=requests.exceptions.ConnectionError("down"),
+    )
+    assert amp_api.catalog_song("500") is None
+
+
+@responses.activate
+def test_next_tracks_posts_to_the_station_with_its_max_limit():
+    responses.add(
+        responses.POST,
+        f"{amp_api.AMP}/me/stations/next-tracks/ra.123",
+        json={
+            "data": [
+                {
+                    "id": "c9",
+                    "attributes": {
+                        "name": "Similar",
+                        "artistName": "B",
+                        "genreNames": ["Pop", "Music"],
+                        "releaseDate": "2015-06-01",
+                    },
+                }
+            ]
+        },
+        status=200,
+    )
+    tracks, err = amp_api.next_tracks("123")
+    assert err == ""
+    assert tracks == [
+        {
+            "id": "c9",
+            "name": "Similar",
+            "artist": "B",
+            "genres": ["Pop", "Music"],
+            "release_date": "2015-06-01",
+        }
+    ]
+    req = responses.calls[0].request
+    assert req.method == "POST" and "limit=10" in req.url
+    assert req.headers["Origin"] == "https://music.apple.com"
+
+
+@pytest.mark.parametrize(
+    "status, expected",
+    [(401, "expired"), (403, "expired"), (429, "throttled")],
+)
+@responses.activate
+def test_next_tracks_auth_and_throttle_codes(status, expected):
+    responses.add(
+        responses.POST, f"{amp_api.AMP}/me/stations/next-tracks/ra.1", status=status
+    )
+    tracks, err = amp_api.next_tracks("1")
+    assert (tracks, err) == ([], expected)
+
+
+@responses.activate
+def test_next_tracks_other_error_is_a_message():
+    responses.add(
+        responses.POST,
+        f"{amp_api.AMP}/me/stations/next-tracks/ra.1",
+        json={"errors": [{"title": "Nope"}]},
+        status=400,
+    )
+    tracks, err = amp_api.next_tracks("1")
+    assert tracks == [] and err.startswith("status 400")
+
+
+def test_next_tracks_missing_user_token_reads_as_expired(monkeypatch):
+    def boom():
+        raise FileNotFoundError("Music user token not found")
+
+    monkeypatch.setattr(amp_api.auth, "get_user_token", boom)
+    assert amp_api.next_tracks("1") == ([], "expired")
+
+
+@responses.activate
+def test_next_tracks_exception_is_a_message():
+    responses.add(
+        responses.POST,
+        f"{amp_api.AMP}/me/stations/next-tracks/ra.1",
+        body=requests.exceptions.ConnectionError("down"),
+    )
+    tracks, err = amp_api.next_tracks("1")
+    assert tracks == [] and "down" in err
 
 
 # --- mutation exception paths ----------------------------------------------

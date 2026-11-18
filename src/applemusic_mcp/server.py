@@ -46,6 +46,7 @@ from .auth import (
 )
 from . import applescript as asc
 from . import amp_api
+from . import vibe as vib
 from .track_cache import get_track_cache, get_cache_dir
 from . import audit_log
 from . import __version__ as _pkg_version
@@ -7433,6 +7434,153 @@ def _discover_song_station(song_id: str, storefront: str = "") -> str:
         return str(e)
 
 
+# ============ VIBE PLAYLIST ============
+
+_VIBE_BATCH = 25  # tracks per add_tracks request, as elsewhere in this file
+_VIBE_RETRY_DELAY_S = 1.5  # a fresh playlist takes a moment before it accepts tracks
+_VIBE_ADD_ATTEMPTS = 3  # first try + 2 retries
+
+
+def _vibe_line(n: int, pick: dict) -> str:
+    t = pick["track"]
+    genre = (t.get("genres") or ["?"])[0]
+    year = (t.get("release_date") or "")[:4] or "?"
+    source = "usulan" if t.get("source") == "candidate" else "radio"
+    why = " · ".join(pick["why"]) or "tanpa kemiripan terukur"
+    return f"{n}. {t['name']} — {t['artist']} ({genre}, {year}) · {source} · {why}"
+
+
+def _vibe_notes(plan: "vib.VibePlan") -> list[str]:
+    notes = []
+    if plan.seed_misses:
+        notes.append(f"Seed tidak ditemukan: {', '.join(plan.seed_misses)}")
+    if plan.harvest_skips:
+        notes.append(f"Radio kosong (seed dilewati): {', '.join(plan.harvest_skips)}")
+    if plan.candidate_misses:
+        notes.append(f"Usulan tidak ditemukan: {', '.join(plan.candidate_misses)}")
+    return notes
+
+
+@_tool(
+    annotations=ToolAnnotations(
+        title="Vibe playlist", readOnlyHint=False, destructiveHint=True, openWorldHint=True
+    )
+)
+def vibe(
+    seeds: list[str],
+    name: str = "",
+    count: int = 25,
+    candidates: Optional[list[str]] = None,
+    exclude: Optional[list[str]] = None,
+    create: bool = False,
+    description: str = "",
+    storefront: str = "",
+) -> str:
+    """Playlist with the same feel as `seeds` (up to 5 songs — "Title",
+    "Artist - Title", or a catalog id), ranked by shared genre, seed artist and
+    era. `candidates` adds your own suggestions (each verified against the
+    catalog, never invented); `exclude` drops songs. Previews by default — set
+    create=true plus a playlist `name` to build it. Creating ADDS every picked
+    song to the user's library. Costs two requests per seed, and Apple's rate
+    limit is a rolling ~60 minutes, so keep seed lists short."""
+    seeds = [s.strip() for s in seeds or [] if (s or "").strip()]
+    if not seeds:
+        return "Error: minimal satu seed lagu."
+    if len(seeds) > vib.MAX_SEEDS:
+        return (
+            f"Error: maksimal {vib.MAX_SEEDS} seed per panggilan (diberi {len(seeds)}). "
+            "Pecah jadi beberapa panggilan."
+        )
+    if count < 1:
+        return "Error: count minimal 1."
+    if create and not name.strip():
+        return "Error: name wajib diisi saat create=true."
+    if create and not _can_use_library_api():
+        return (
+            f"Error: {_FORCED_TOKENLESS_MSG}"
+            if _forced_tokenless()
+            else _SESSION_EXPIRED_MSG
+        )
+
+    exact = amp_api.resolve_playlist(name.strip(), api_created_only=False) if name.strip() else None
+    same_name = bool(exact) and exact["name"].strip().lower() == name.strip().lower()
+    if create and same_name:
+        return f"Error: playlist '{exact['name']}' sudah ada. Pilih nama lain."
+    # A near-miss name is allowed, but the name-based playlist commands fall back
+    # to a substring match, so say so now rather than after a mis-targeted edit.
+    warning = (
+        f"Peringatan: sudah ada playlist '{exact['name']}' yang namanya mirip — "
+        "perintah playlist berbasis nama nanti bisa mengenai yang salah."
+        if exact and not same_name
+        else ""
+    )
+
+    plan = vib.build(seeds, candidates, exclude, count, storefront.strip() or get_storefront())
+    if plan.err == "expired":
+        return _SESSION_EXPIRED_MSG
+    if plan.err == "throttled":
+        return _SESSION_THROTTLED_MSG
+    if not plan.seeds:
+        if not _has_user_token():
+            return _SESSION_EXPIRED_MSG
+        reason = (
+            _THROTTLED_REASON
+            if amp_api.throttled_recently()
+            else "tidak ada seed yang cocok di katalog"
+        )
+        return f"Error: {reason}. Seed dicoba: {', '.join(plan.seed_misses) or '-'}"
+    if not plan.tracks:
+        return "Error: tidak ada lagu yang lolos penyaringan. " + " ".join(_vibe_notes(plan))
+
+    if not create:
+        lines = [
+            f"Vibe playlist — pratinjau {len(plan.tracks)} lagu",
+            "Seed: " + ", ".join(f"{s['name']} — {s['artist']}" for s in plan.seeds),
+            *_vibe_notes(plan),
+            "",
+        ]
+        lines += [_vibe_line(i, p) for i, p in enumerate(plan.tracks, 1)]
+        lines += [
+            "",
+            f"{len(plan.tracks)} lagu ini akan ditambahkan ke library saat playlist dibuat.",
+            "Belum ada yang dibuat. Untuk membuat: vibe(seeds=[...], create=true, name=\"...\")",
+        ]
+        if warning:
+            lines.append(warning)
+        return "\n".join(lines)
+
+    ok, created = amp_api.create_playlist(name.strip(), description)
+    if not ok:
+        return f"Error: gagal membuat playlist: {created}"
+
+    landed: list[dict] = []
+    failures: list[str] = []
+    for start in range(0, len(plan.tracks), _VIBE_BATCH):
+        picks = plan.tracks[start : start + _VIBE_BATCH]
+        for attempt in range(_VIBE_ADD_ATTEMPTS):
+            ok, msg = amp_api.add_tracks(created, [p["track"]["id"] for p in picks])
+            if ok:
+                landed.extend(picks)
+                break
+            if attempt + 1 == _VIBE_ADD_ATTEMPTS:
+                failures.append(f"lagu {start + 1}–{start + len(picks)}: {msg}")
+            else:
+                time.sleep(_VIBE_RETRY_DELAY_S)
+
+    lines = [
+        f"Playlist '{name.strip()}' dibuat (id {created}): {len(landed)}/{len(plan.tracks)} lagu.",
+        f"{len(landed)} lagu ditambahkan ke library.",
+        *_vibe_notes(plan),
+    ]
+    if failures:
+        lines.append("Batch gagal: " + "; ".join(failures))
+    if landed:
+        lines += [""] + [_vibe_line(i, p) for i, p in enumerate(landed, 1)]
+    if warning:
+        lines.append(warning)
+    return "\n".join(lines)
+
+
 # ============ RATINGS ============
 
 
@@ -10195,6 +10343,7 @@ def hidden_tools(lvl) -> set[str]:
         hidden.add("queue")
     if not lvl.network:
         hidden.add("discover")
+        hidden.add("vibe")
         if not lvl.ui:
             hidden.add("catalog")  # without the API, catalog search is UI scripting
     return hidden
