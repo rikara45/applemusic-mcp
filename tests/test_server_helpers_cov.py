@@ -3303,7 +3303,7 @@ class TestThrottleHonesty:
         offenders = [
             f"{f.name}:{n}"
             for f in src.glob("*.py")
-            for n, line in enumerate(f.read_text().splitlines(), 1)
+            for n, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1)
             if "wait a moment and retry" in line or "try again shortly" in line
         ]
         assert offenders == []
