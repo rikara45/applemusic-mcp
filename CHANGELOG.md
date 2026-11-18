@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.0] - 2026-11-18
+
+New `vibe` tool: a few seed songs in, a playlist with the same feel out.
+
+### Added
+
+- **`vibe`** turns up to five seed songs ("Title", "Artist - Title", or a catalog id) into a playlist ranked by shared genre, seed artist and era. Apple's per-song radio supplies the candidates; `candidates` lets the model add its own suggestions, each verified against the catalog so an invented title never gets through. Previews by default; `create=true` plus a `name` builds the playlist.
+- Previews explain every pick (source plus why it scored), and name the seeds whose radio came back empty, the candidates that weren't found, and the library side effect of creating.
+- Rate limits and expired sessions are reported as what they are — a 429 aborts the whole call instead of returning a short "no similar songs" list.
+
+### Fixed
+
+- **Windows:** the test suite no longer deletes the real Music-User-Token from the Credential Locker; writing a secret to the file store was also purging the keychain copy.
+
 ## [0.22.1] - 2026-11-07
 
 `playlist copy` on macOS is fast and exact, library songs add over the web API again, and `login` waits for you to sign in.
