@@ -222,3 +222,28 @@ dicatat.
   dari Windows Credential Locker — `secret_set` jalur file tetap memanggil
   `keyring.delete_password`. Ditambal dengan fixture autouse di
   `tests/conftest.py` yang mengosongkan backend keychain untuk semua test.
+
+## Hasil pemangkasan macOS (fase 2)
+
+Dilakukan di branch `refactor/prune-macos` setelah fitur `vibe` rilis 0.23.0.
+
+- Modul `applescript.py`, `safari.py`, `safari_player.py` dan test-nya dihapus,
+  termasuk `test_live_ui.py`, `scripts/integration_test_applescript.py`,
+  `scripts/preflight-ui.sh`, target `make preflight-ui`, dan marker `ui_live`.
+- Level `music` dan `--allow-ui` hilang: `capabilities.py` hanya `api/web/full`,
+  `Level` tanpa `ui`/`network`, `install_network_guard` dihapus. `cli.py` kehilangan
+  `--safari` dan `--allow-ui`; `login` selalu Chrome (atau `--dev`).
+- `server.py` tidak lagi mengimpor `asc`; `APPLESCRIPT_AVAILABLE = False` dipertahankan
+  sebagai penanda. Semua cabang native di playlist/library/playback dibuang dan
+  diganti jalur amp-api + Chrome. Playback, control, now_playing, settings, reveal
+  berjalan di Chrome; `airplay` menjawab bahwa fitur itu butuh Music.app.
+- Fitur yang hilang bersama jalur native (dan sekarang menjawab dengan pesan jelas,
+  bukan error samar): bintang 1–5, daftar Favorites/loved, folder bertingkat, tree
+  dan path folder, rename folder, snapshot library, genre search, dan AirPlay.
+- Cabang yang dipertahankan sesuai peringatan spec: `_playlist_add_api`,
+  `_playlist_add_preview`, `_resolve_playlist` (kini hanya id/API), `_write_rail` +
+  `_label_write`, `_playlist_remove_api`, `_confirm_swap_track` (API), dan `vibe`
+  (murni `amp_api`).
+- `pyproject.toml`: Playwright jadi dependency semua platform; extra `browser` dan
+  `pyobjc-framework-Quartz` dihapus. Dokumentasi (README, SKILL.md, docs/*,
+  RELEASING.md, SECURITY.md) disesuaikan ke Windows/Linux + Chrome.
