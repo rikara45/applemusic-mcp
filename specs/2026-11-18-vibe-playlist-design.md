@@ -197,3 +197,28 @@ dicatat.
   `count × 1,5` berdasarkan hasil nyata).
 - Teks pesan (bahasa Indonesia untuk output tool, identifier tetap Inggris).
 - Detail retry propagasi playlist.
+
+## Hasil implementasi (diisi saat membangun)
+
+- **Spike live 2026-11-18:** `POST /me/stations/next-tracks/ra.{song_id}`
+  mengembalikan `data[].type == "songs"` dengan `id`, `attributes.name`,
+  `artistName`, `genreNames`, `releaseDate`, `durationInMillis`,
+  `playParams.id`. Tidak butuh body. `include=artists` tidak menambah apa pun.
+- **Batas nyata:** `limit` maksimum 10 (`11+` → 400), default 2, jadi selalu
+  dikirim `limit=10`. Tiap panggilan adalah undian baru (hasil berbeda antar
+  panggilan) — karena itu build dijalankan ulang saat create, tanpa cache.
+  Buffer maksimum nyata: 10 × 5 seed = 50 kandidat untuk `count ≤ 50`.
+- **`storefront` tidak berlaku di harvest:** endpoint hanya menerima id lagu
+  (yang sudah terikat storefront). Parameter `next_tracks(song_id)` sengaja
+  tanpa `storefront`; storefront dipakai saat resolve seed/kandidat/exclude.
+- **Seed berupa catalog ID** tidak bisa dicari lewat `search_catalog_songs`
+  (`term` numerik tidak match), jadi ditambah `amp_api.catalog_song(song_id,
+  storefront)` — satu GET, tetap satu request per seed.
+- **Uji create live:** 8/8 lagu langsung masuk tanpa perlu retry propagasi;
+  retry 3 percobaan × 1,5 detik tetap dipertahankan untuk playlist baru.
+  Playlist uji dihapus setelah verifikasi; lagunya tetap di library (efek
+  samping yang memang dinyatakan di output).
+- **Temuan di luar fitur:** seluruh `pytest` menghapus Music-User-Token asli
+  dari Windows Credential Locker — `secret_set` jalur file tetap memanggil
+  `keyring.delete_password`. Ditambal dengan fixture autouse di
+  `tests/conftest.py` yang mengosongkan backend keychain untuk semua test.
