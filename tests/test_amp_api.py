@@ -436,6 +436,9 @@ def test_get_tracks_paginates_and_shapes():
                     "attributes": {
                         "name": "Song1",
                         "artistName": "Artist1",
+                        "albumName": "Album1",
+                        "discNumber": 1,
+                        "trackNumber": 2,
                         "playParams": {"catalogId": "c1"},
                     },
                 }
@@ -460,8 +463,24 @@ def test_get_tracks_paginates_and_shapes():
     )
     out = amp_api.get_tracks("p.1")
     assert out == [
-        {"relationship_id": "i.REL1", "name": "Song1", "artist": "Artist1", "catalog_id": "c1"},
-        {"relationship_id": "i.REL2", "name": "Song2", "artist": "", "catalog_id": "c2"},
+        {
+            "relationship_id": "i.REL1",
+            "name": "Song1",
+            "artist": "Artist1",
+            "album": "Album1",
+            "disc_number": 1,
+            "track_number": 2,
+            "catalog_id": "c1",
+        },
+        {
+            "relationship_id": "i.REL2",
+            "name": "Song2",
+            "artist": "",
+            "album": "",
+            "disc_number": 0,
+            "track_number": 0,
+            "catalog_id": "c2",
+        },
     ]
     assert "amp-api.music.apple.com/v1/me/library/playlists/p.1/tracks?offset=100" in (
         responses.calls[1].request.url

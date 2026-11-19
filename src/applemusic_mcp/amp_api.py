@@ -256,7 +256,8 @@ def resolve_playlist_id(name: str, api_created_only: bool = True) -> Optional[st
 
 
 def get_tracks(playlist_id: str) -> Optional[list[dict]]:
-    """Tracks in a playlist: [{relationship_id, name, artist, catalog_id}]. Paginates.
+    """Tracks in a playlist: [{relationship_id, name, artist, album, disc_number,
+    track_number, catalog_id}]. Paginates.
 
     All or nothing: None when any page fails (a 429, a timeout), never the pages
     read so far, which would look like the whole playlist. [] is an empty
@@ -281,6 +282,9 @@ def get_tracks(playlist_id: str) -> Optional[list[dict]]:
                         "relationship_id": t.get("id"),  # i.xxx — needed for remove
                         "name": a.get("name", ""),
                         "artist": a.get("artistName", ""),
+                        "album": a.get("albumName", ""),
+                        "disc_number": a.get("discNumber") or 0,
+                        "track_number": a.get("trackNumber") or 0,
                         "catalog_id": pp.get("catalogId") or pp.get("id"),
                     }
                 )
