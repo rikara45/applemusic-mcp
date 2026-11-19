@@ -3580,6 +3580,206 @@ def _playlist_add(
         return f"Error: {str(e)}\n" + "\n".join(steps)
 
 
+def _sort_track_rows(tracks: list[dict]) -> list[dict]:
+    """Artist A–Z, album A–Z, then disc/track; ties keep their original order."""
+    return [
+        t
+        for _, t in sorted(
+            enumerate(tracks),
+            key=lambda it: (
+                1 if not it[1].get("artist") else 0,
+                (it[1].get("artist") or "").casefold().strip(),
+                1 if not it[1].get("album") else 0,
+                (it[1].get("album") or "").casefold().strip(),
+                it[1].get("disc_number") or 0,
+                it[1].get("track_number") or 0,
+                it[0],
+            ),
+        )
+    ]
+
+
+_SORT_BATCH = 25
+_SORT_PREVIEW_LIMIT = 30
+
+
+def _format_sort_preview(rows: list[dict], limit: int = _SORT_PREVIEW_LIMIT) -> str:
+    """Numbered artist — album — title lines, capped so a huge playlist stays readable."""
+    lines = [
+        f"  {i}. {t.get('artist') or 'Unknown artist'} — "
+        f"{t.get('album') or 'Unknown album'} — {t.get('name') or 'Unknown title'}"
+        for i, t in enumerate(rows[:limit], 1)
+    ]
+    if len(rows) > limit:
+        lines.append(f"  … and {len(rows) - limit} more (playlist(action='tracks') to see all)")
+    return "\n".join(lines)
+
+
+def _write_sort_backup(playlist_id: str, playlist_name: str, tracks: list[dict]) -> Path:
+    """Snapshot the original order before a rewrite; never touches the export GC root."""
+    backups = get_cache_dir() / "snapshots"
+    backups.mkdir(parents=True, exist_ok=True)
+    safe_id = re.sub(r"[^A-Za-z0-9._-]+", "_", playlist_id)
+    path = backups / f"{safe_id}_sort_{get_timestamp()}.json"
+    path.write_text(
+        json.dumps(
+            {
+                "playlist": playlist_name,
+                "playlist_id": playlist_id,
+                "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "tracks": tracks,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _restore_playlist_tracks(playlist_id: str, tracks: list[dict]) -> tuple[bool, str]:
+    """Re-add tracks in the given order, batch 25, returning the first failure."""
+    for i in range(0, len(tracks), _SORT_BATCH):
+        batch = [(t["relationship_id"], "library-songs") for t in tracks[i : i + _SORT_BATCH]]
+        ok, msg = amp_api.add_tracks(playlist_id, batch)
+        if not ok:
+            return False, msg
+    return True, "Restored"
+
+
+def _rollback_sort(
+    playlist_id: str, original: list[dict], removed: list[dict], backup: Path, reason: str
+) -> str:
+    """Undo a half-finished rewrite: drop partial new entries, re-add what was removed."""
+    original_ids = {t["relationship_id"] for t in original}
+    current = amp_api.get_tracks(playlist_id)
+    cleanup_error = ""
+    if current is None:
+        cleanup_error = " Couldn't read the playlist to clean up partial adds."
+    else:
+        for t in current:
+            if t["relationship_id"] not in original_ids:
+                ok, msg = amp_api.remove_track(playlist_id, t["relationship_id"])
+                if not ok:
+                    cleanup_error = f" Couldn't remove a partial add ({msg})."
+                    break
+
+    ok, msg = _restore_playlist_tracks(playlist_id, removed)
+    if not removed:
+        restored = "The playlist was unchanged."
+    elif ok:
+        restored = f"Restored {len(removed)} track(s); re-run sort to finish the order."
+    else:
+        restored = (
+            f"Restore failed ({msg}) — the playlist may be missing tracks. "
+            "Re-add them from the backup."
+        )
+    return f"⚠️ Sort couldn't finish: {reason}. {restored}{cleanup_error}\nBackup: {backup}"
+
+
+def _playlist_sort_api(playlist: str, dry_run: bool = False) -> str:
+    """Reorder a playlist in place: artist A–Z, then album A–Z and track number."""
+    resolved = _resolve_playlist(playlist)
+    if resolved.error:
+        return resolved.error
+    pid = resolved.api_id
+    if not pid:
+        return _resolve_failure_msg(f"playlist {playlist!r} not found in your library")
+
+    pl = next((p for p in amp_api.list_playlists() if p.get("id") == pid), None)
+    if pl is None:
+        return _resolve_failure_msg(f"couldn't find '{playlist}' in your library listing")
+    if amp_api.playlist_kind(pl) != "api":
+        return (
+            f"Error: '{playlist}' can't be sorted over the Apple Music web API — it was "
+            "created in Music.app (or is Apple-curated). Only playlists created via the "
+            "Apple Music API (which includes playlists this tool creates) can be rewritten."
+        )
+
+    tracks = amp_api.get_tracks(pid)
+    if tracks is None:
+        return _unreadable_playlist_msg(playlist)
+    if not tracks:
+        return f"'{playlist}' is empty — nothing to sort."
+
+    target = _sort_track_rows(tracks)
+    if [t["relationship_id"] for t in target] == [t["relationship_id"] for t in tracks]:
+        return f"'{playlist}' is already sorted by artist and album."
+
+    if dry_run:
+        return (
+            f"Preview: '{playlist}' would be reordered ({len(target)} tracks) — "
+            "nothing written.\n" + _format_sort_preview(target)
+        )
+
+    if amp_api.throttled_recently():
+        return _SESSION_THROTTLED_MSG
+
+    backup = _write_sort_backup(pid, pl["name"], tracks)
+    removed: list[dict] = []
+    for t in tracks:
+        ok, msg = amp_api.remove_track(pid, t["relationship_id"])
+        if not ok:
+            return _rollback_sort(pid, tracks, removed, backup, f"couldn't remove a track ({msg})")
+        removed.append(t)
+
+    for i in range(0, len(target), _SORT_BATCH):
+        batch = [(t["relationship_id"], "library-songs") for t in target[i : i + _SORT_BATCH]]
+        ok, msg = amp_api.add_tracks(pid, batch)
+        if not ok:
+            return _rollback_sort(
+                pid, tracks, removed, backup, f"couldn't add the sorted tracks ({msg})"
+            )
+
+    after = amp_api.get_tracks(pid)
+
+    def _key(t: dict) -> tuple[str, str, str]:
+        return (
+            (t.get("artist") or "").casefold().strip(),
+            (t.get("album") or "").casefold().strip(),
+            (t.get("name") or "").casefold().strip(),
+        )
+
+    expected = [_key(t) for t in target]
+    actual = [_key(t) for t in after] if after is not None else None
+
+    # The rewrite happened (all removes and adds returned success), so log it even
+    # when the re-read disagrees with the target.
+    audit_log.log_action(
+        "sort_playlist",
+        {"playlist": pl["name"], "playlist_id": pid, "tracks": len(target), "via": "api"},
+    )
+
+    if actual is None:
+        warning = (
+            f"\n\n⚠️ Couldn't confirm the new order: re-reading the playlist failed. "
+            f"Backup: {backup}"
+        )
+    elif actual != expected:
+        pos = next(
+            (i for i, (a, b) in enumerate(zip(actual, expected), 1) if a != b),
+            min(len(actual), len(expected)) + 1,
+        )
+        warning = (
+            f"\n\n⚠️ The playlist was rewritten, but the re-read doesn't match the target "
+            f"order (first difference at position {pos}). Backup: {backup}"
+        )
+    else:
+        warning = ""
+
+    if warning:
+        return (
+            f"Rewrote {len(target)} tracks in '{pl['name']}'.\n"
+            + _format_sort_preview(target)
+            + warning
+        )
+
+    return (
+        f"Sorted {len(target)} tracks in '{pl['name']}' by artist and album.\n"
+        + _format_sort_preview(target)
+    )
+
+
 def _playlist_copy(source: str = "", new_name: str = "") -> str:
     """Internal: Copy playlist."""
     # Validate inputs
@@ -3767,7 +3967,7 @@ def playlist(
     auto_add: Optional[bool] = None,
     replace: str = "",
 ) -> str:
-    """Playlist and folder operations. Actions: list, folders, tracks, search, create, add, copy, move, remove, delete, rename. To find a playlist by name, use action='list' with filter='alice' (loose name match) rather than action='search', which searches the TRACKS inside a given playlist and needs a playlist param. action='tracks' returns one page: limit (default 500; 0 = every track) caps the tracks returned, offset pages through longer playlists, and the text header shows 'start-end of total' with a note when more remain; filter (loose match on track name or artist) is applied across the whole playlist, then paged. Folders are single-level over the API (no slash-separated paths, no tree or path lookup). For action='add', `track` accepts a song NAME, a catalog song id (a numeric id like '1440857781' — pins the EXACT edition), or a library id; set auto_add=True to find tracks not already in the user's library. To SWAP one track for another, use action='add' with `replace`=<the old track to remove>: it adds the new track, confirms it actually persisted by re-reading the playlist, and only THEN removes the old one — so a write that didn't stick never costs you the old track."""
+    """Playlist and folder operations. Actions: list, folders, tracks, search, create, add, copy, sort, move, remove, delete, rename. To find a playlist by name, use action='list' with filter='alice' (loose name match) rather than action='search', which searches the TRACKS inside a given playlist and needs a playlist param. action='tracks' returns one page: limit (default 500; 0 = every track) caps the tracks returned, offset pages through longer playlists, and the text header shows 'start-end of total' with a note when more remain; filter (loose match on track name or artist) is applied across the whole playlist, then paged. Folders are single-level over the API (no slash-separated paths, no tree or path lookup). For action='add', `track` accepts a song NAME, a catalog song id (a numeric id like '1440857781' — pins the EXACT edition), or a library id; set auto_add=True to find tracks not already in the user's library. To SWAP one track for another, use action='add' with `replace`=<the old track to remove>: it adds the new track, confirms it actually persisted by re-reading the playlist, and only THEN removes the old one — so a write that didn't stick never costs you the old track. action='sort' reorders a playlist in place by artist A–Z, then album A–Z, then disc and track number; dry_run=True previews it. Apple has no reorder API, so the playlist's tracks are rewritten (N removes + N/25 adds); only playlists created via the Apple Music API (which includes playlists this tool creates) can be sorted."""
     action = action.lower().strip().replace("-", "_")
 
     if action == "list":
@@ -3804,6 +4004,9 @@ def playlist(
         if track and not album:
             return _playlist_add_api(playlist, track, artist, allow_duplicates, auto_add)
         return _playlist_add(playlist, track, album, artist, allow_duplicates, verify, auto_add)
+    elif action == "sort":
+        result = _playlist_sort_api(playlist, dry_run)
+        return _label_write(result, "web") if result.startswith(("Sorted ", "Rewrote ")) else result
     elif action == "copy":
         return _playlist_copy(source, new_name)
     elif action == "remove":
@@ -3840,7 +4043,7 @@ def playlist(
         target = playlist or folder
         return _playlist_path(target) if target else _playlist_tree()
     else:
-        return f"Unknown action: {action}. Use: list, folders, tracks, search, create, add, copy, move, remove, delete, rename"
+        return f"Unknown action: {action}. Use: list, folders, tracks, search, create, add, copy, sort, move, remove, delete, rename"
 
 
 # ============ LIBRARY MANAGEMENT ============
