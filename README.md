@@ -105,7 +105,7 @@ Seven action-based tools plus `vibe` keep the MCP context small. Each action-bas
 
 | Tool | Actions |
 |---|---|
-| `playlist` | list, folders, tracks, search, create, add, copy, move, remove, delete, rename |
+| `playlist` | list, folders, tracks, search, create, add, copy, sort, move, remove, delete, rename |
 | `library` | search, add, browse, recently_played, recently_added, rate, remove |
 | `catalog` | search, resolve, album_tracks, album_details, song_details, artist_details, genres, suggestions |
 | `discover` | recommendations, heavy_rotation, charts, top_songs, similar_artists, personal_station, song_station |
